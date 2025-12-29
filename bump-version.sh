@@ -122,9 +122,15 @@ if [ "$BUMP_TYPE" = "tag" ]; then
 
         echo ""
         echo "Done! Tag '$TAG_NAME' updated to current commit"
-        echo ""
-        echo "To push to remote, run:"
-        echo "  git push origin -f $TAG_NAME"
+
+        if [ "$AUTO_CONFIRM" = true ]; then
+            echo "Pushing tag to remote..."
+            git push origin -f "$TAG_NAME"
+        else
+            echo ""
+            echo "To push to remote, run:"
+            echo "  git push origin -f $TAG_NAME"
+        fi
     else
         echo "Status: New tag"
         echo ""
@@ -143,9 +149,15 @@ if [ "$BUMP_TYPE" = "tag" ]; then
 
         echo ""
         echo "Done! Tag '$TAG_NAME' created"
-        echo ""
-        echo "To push to remote, run:"
-        echo "  git push origin $TAG_NAME"
+
+        if [ "$AUTO_CONFIRM" = true ]; then
+            echo "Pushing tag to remote..."
+            git push origin "$TAG_NAME"
+        else
+            echo ""
+            echo "To push to remote, run:"
+            echo "  git push origin $TAG_NAME"
+        fi
     fi
     exit 0
 fi

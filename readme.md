@@ -76,7 +76,7 @@ Interactive version management tool for Xcode projects. Automates semantic versi
 ./bump-version.sh tag [-y|--yes]  # Non-interactive mode for CI
 ```
 
-If no argument is provided, the script displays an interactive menu to select the bump type. Use `-y` or `--yes` with the `tag` option to skip confirmation prompts (useful for GitHub Actions or other CI pipelines).
+If no argument is provided, the script displays an interactive menu to select the bump type. Use `-y` or `--yes` with the `tag` option to skip confirmation prompts and automatically push the tag to remote (useful for GitHub Actions or other CI pipelines).
 
 **Bump Types:**
 
