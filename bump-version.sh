@@ -6,6 +6,7 @@
 # Copyright (c) 2024-2025 Shawn Carrillo
 #
 # Usage: ./bump-version.sh [major|minor|patch|tag]
+#        ./bump-version.sh tag [-y|--yes]  (non-interactive, for CI)
 #
 # Bash Reference: https://tldp.org/LDP/abs/html/comparison-ops.html
 # Shell options:
@@ -18,6 +19,21 @@
 #
 
 set -e
+
+# Parse arguments
+BUMP_TYPE=""
+AUTO_CONFIRM=false
+
+for arg in "$@"; do
+    case "$arg" in
+        -y|--yes)
+            AUTO_CONFIRM=true
+            ;;
+        major|minor|patch|tag)
+            BUMP_TYPE="$arg"
+            ;;
+    esac
+done
 
 # Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,9 +70,14 @@ echo "Current version: $CURRENT_VERSION"
 # Parse SemVer components
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
 
-# Determine bump type
-BUMP_TYPE="$1"
+# Validate -y flag is only used with tag
+if [ "$AUTO_CONFIRM" = true ] && [ "$BUMP_TYPE" != "tag" ]; then
+    echo "Error: -y/--yes flag is only supported with 'tag' bump type"
+    echo "Usage: ./bump-version.sh tag -y"
+    exit 1
+fi
 
+# Prompt for bump type if not provided
 if [ -z "$BUMP_TYPE" ]; then
     echo ""
     echo "Select version bump type:"
@@ -78,27 +99,54 @@ fi
 # Handle "tag" type separately (no version change)
 if [ "$BUMP_TYPE" = "tag" ]; then
     TAG_NAME="rel.v$CURRENT_VERSION"
+    TAG_EXISTS=$(git tag -l "$TAG_NAME")
 
     echo "Bump type: $BUMP_TYPE"
-    echo "Tag to update: $TAG_NAME"
-    echo ""
+    echo "Tag: $TAG_NAME"
 
-    # Confirm before proceeding
-    read -p "Force-update existing tag '$TAG_NAME'? [y/N]: " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Aborted."
-        exit 0
+    if [ -n "$TAG_EXISTS" ]; then
+        echo "Status: Tag already exists"
+        echo ""
+
+        # Confirm force-update (skip if auto-confirm)
+        if [ "$AUTO_CONFIRM" != true ]; then
+            read -p "Force-update existing tag '$TAG_NAME'? [y/N]: " confirm
+            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+                echo "Aborted."
+                exit 0
+            fi
+        fi
+
+        echo "Updating git tag: $TAG_NAME"
+        git tag -f "$TAG_NAME"
+
+        echo ""
+        echo "Done! Tag '$TAG_NAME' updated to current commit"
+        echo ""
+        echo "To push to remote, run:"
+        echo "  git push origin -f $TAG_NAME"
+    else
+        echo "Status: New tag"
+        echo ""
+
+        # Confirm creation (skip if auto-confirm)
+        if [ "$AUTO_CONFIRM" != true ]; then
+            read -p "Create tag '$TAG_NAME'? [y/N]: " confirm
+            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+                echo "Aborted."
+                exit 0
+            fi
+        fi
+
+        echo "Creating git tag: $TAG_NAME"
+        git tag "$TAG_NAME"
+
+        echo ""
+        echo "Done! Tag '$TAG_NAME' created"
+        echo ""
+        echo "To push to remote, run:"
+        echo "  git push origin $TAG_NAME"
     fi
-
-    # Force-update the git tag
-    echo "Updating git tag: $TAG_NAME"
-    git tag -f "$TAG_NAME"
-
-    echo ""
-    echo "Done! Tag '$TAG_NAME' updated to current commit"
-    echo ""
-    echo "To push to remote, run:"
-    echo "  git push origin -f $TAG_NAME"
     exit 0
 fi
 
