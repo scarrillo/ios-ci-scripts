@@ -5,6 +5,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2024-2025 Shawn Carrillo
 #
+# Usage: ./swiftlint.sh [--strict]
+#   --strict : Treat warnings as errors (fails on any violation)
+#
 # Bash Reference: https://tldp.org/LDP/abs/html/comparison-ops.html
 # Shell options:
 #   set -e : Exit immediately if a command exits with a non-zero status
@@ -15,6 +18,18 @@
 #
 
 set -e
+
+# Parse arguments
+STRICT_MODE=""
+for arg in "$@"; do
+    case $arg in
+        --strict)
+            STRICT_MODE="--strict"
+            echo "note: SwiftLint Script: Strict mode enabled"
+            shift
+            ;;
+    esac
+done
 
 if [ -n "$CI" ]; then
     echo "note: SwiftLint Script: Installing SwiftLint in CI: [$CI]"
@@ -32,11 +47,9 @@ if which swiftlint >/dev/null; then
     SWIFT_LINT_FILE="${SWIFT_LINT_TARGET}/ci_scripts/.swiftlint.yml"
 
     echo "note: SwiftLint Script: Config: ${SWIFT_LINT_FILE}"
-    swiftlint --config "${SWIFT_LINT_FILE}" $SWIFT_LINT_TARGET
+    swiftlint $STRICT_MODE --config "${SWIFT_LINT_FILE}" $SWIFT_LINT_TARGET
     #THIS Works - Explicit path, just in case for xcode cloud
     #swiftlint --config ./.swiftlint.yml
-    #strict mode will block build in xcode cloud
-    #swiftlint --strict $CI_WORKSPACE
 else
     echo "warning: SwiftLint not installed"
 fi
