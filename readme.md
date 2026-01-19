@@ -9,7 +9,10 @@ These scripts also served as the inspiration for the [Claude Code Release Plugin
 - [Scripts](#scripts)
   - [bump-version.sh](#bump-versionsh)
   - [ci_post_clone.sh](#ci_post_clonesh)
+  - [ci_pre_xcodebuild.sh](#ci_pre_xcodebuildsh)
   - [ci_post_xcodebuild.sh](#ci_post_xcodebuildsh)
+  - [generate_env_variables.sh](#generate_env_variablessh)
+  - [generate_xcconfig.sh](#generate_xcconfigsh)
   - [swiftlint.sh](#swiftlintsh)
   - [firebase_upload_symbols.sh](#firebase_upload_symbolssh)
   - [testflight_whattotest.sh](#testflight_whattotestsh)
@@ -27,6 +30,125 @@ These scripts also served as the inspiration for the [Claude Code Release Plugin
 ### ci_post_clone.sh
 
 Xcode Cloud post-clone hook. Runs after the repository is cloned. Executes `swiftlint.sh` to lint the codebase during CI builds.
+
+### ci_pre_xcodebuild.sh
+
+Xcode Cloud pre-build hook. Runs before xcodebuild starts. Calls `generate_env_variables.sh` to generate Swift configuration files from environment variables.
+
+This enables you to inject API keys, feature flags, and other configuration at build time without committing them to source control.
+
+### generate_env_variables.sh
+
+Converts environment variables into Swift files. Uses a naming convention to determine file names and property names.
+
+> **⚠️ Security Warning**
+>
+> This script generates **plain text** Swift constants. Values can be extracted from compiled binaries using simple tools like `strings`.
+>
+> **Appropriate for:**
+> - Analytics IDs (Google Analytics, Firebase)
+> - Feature flags
+> - Public API endpoints
+> - Non-sensitive configuration
+>
+> **NOT appropriate for:**
+> - Payment/billing API keys
+> - Authentication secrets
+> - Database credentials
+> - Any key that could cause financial or security damage if exposed
+>
+> For sensitive credentials, use a backend proxy (keys never leave your server) or a dedicated secrets manager with obfuscation.
+
+**Convention:**
+```
+ENV_<FileName>_<PropertyName>=value
+```
+
+**Example:**
+
+Set these environment variables (in Xcode Cloud or locally):
+```bash
+export ENV_AnalyticsConfig_ga4MeasurementId="G-XXXXXXXXXX"
+export ENV_AnalyticsConfig_ga4ApiKey="your-api-key"
+export ENV_FeatureFlags_enableBetaFeatures="true"
+```
+
+Run the script:
+```bash
+./generate_env_variables.sh ./Shared/EnvVariables
+```
+
+This generates:
+
+**AnalyticsConfig.swift**
+```swift
+import Foundation
+
+enum AnalyticsConfig {
+    static let ga4MeasurementId = "G-XXXXXXXXXX"
+    static let ga4ApiKey = "your-api-key"
+}
+```
+
+**FeatureFlags.swift**
+```swift
+import Foundation
+
+enum FeatureFlags {
+    static let enableBetaFeatures = "true"
+}
+```
+
+**Xcode Cloud Setup:**
+
+1. Go to App Store Connect → Xcode Cloud → Workflows
+2. Select your workflow → Environment Variables
+3. Add variables with `ENV_` prefix
+4. Mark sensitive values as "Secret"
+
+The generated files should be gitignored. For local development, create them manually or run the script with exported environment variables.
+
+### generate_xcconfig.sh
+
+Alternative to `generate_env_variables.sh` that generates xcconfig files instead of Swift. Uses the same `ENV_` naming convention.
+
+> **⚠️ Security Warning**
+>
+> Same as above - values are plain text and extractable from binaries. Only use for low-sensitivity configuration.
+
+**Example:**
+
+```bash
+export ENV_AppConfig_GA4_MEASUREMENT_ID="G-XXXXXXXXXX"
+export ENV_AppConfig_FEATURE_FLAG_BETA="true"
+
+./generate_xcconfig.sh ./Config
+```
+
+**Generates `Config/AppConfig.xcconfig`:**
+```
+GA4_MEASUREMENT_ID = G-XXXXXXXXXX
+FEATURE_FLAG_BETA = true
+```
+
+**Usage in Xcode:**
+
+1. Add the generated xcconfig to your project
+2. Reference in your target's build configuration
+3. Access via Info.plist: `$(GA4_MEASUREMENT_ID)`
+4. Or in Swift: `Bundle.main.infoDictionary?["GA4MeasurementId"]`
+
+**Comparison:**
+
+| Aspect | generate_env_variables.sh | generate_xcconfig.sh |
+|--------|---------------------------|----------------------|
+| Output | Swift enum | xcconfig file |
+| Access | `Config.property` | `Bundle.main.infoDictionary?` |
+| Type safety | Compile-time | Runtime |
+| Missing key | Build fails | Returns nil |
+| Xcode integration | Add to target | Add to build config |
+
+Choose based on whether you prefer compile-time safety or runtime flexibility.
 
 ### ci_post_xcodebuild.sh
 
@@ -221,6 +343,7 @@ Xcode Cloud automatically discovers and executes scripts in the `ci_scripts/` di
 | Script | Trigger | Purpose |
 |--------|---------|---------|
 | `ci_post_clone.sh` | After repository clone | Runs SwiftLint |
+| `ci_pre_xcodebuild.sh` | Before build | Generates Swift config from env variables |
 | `ci_post_xcodebuild.sh` | After archive build | Uploads dSYMs, generates TestFlight notes |
 
 **Xcode Cloud and Submodules**
