@@ -33,7 +33,7 @@ Xcode Cloud post-clone hook. Runs after the repository is cloned. Executes `swif
 
 ### ci_pre_xcodebuild.sh
 
-Xcode Cloud pre-build hook. Runs before xcodebuild starts. Calls `generate_env_variables.sh` to generate Swift configuration files from environment variables.
+Xcode Cloud pre-build hook. Runs before xcodebuild starts. Calls `generate_xcconfig.sh` to generate xcconfig files from environment variables.
 
 This enables you to inject API keys, feature flags, and other configuration at build time without committing them to source control.
 
@@ -110,45 +110,73 @@ The generated files should be gitignored. For local development, create them man
 
 ### generate_xcconfig.sh
 
-Alternative to `generate_env_variables.sh` that generates xcconfig files instead of Swift. Uses the same `ENV_` naming convention.
+Generates xcconfig files from all `ENV_` prefixed environment variables. This is the recommended approach for Xcode Cloud as it provides runtime flexibility - missing config files won't break the build.
 
 > **⚠️ Security Warning**
 >
 > Same as above - values are plain text and extractable from binaries. Only use for low-sensitivity configuration.
 
+**Usage:**
+
+```bash
+generate_xcconfig.sh <output_directory> [product_name]
+```
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `output_directory` | Where to write the xcconfig file | Required |
+| `product_name` | Name prefix for output file | `CI_PRODUCT` or `"App"` |
+
+**Generated Files:**
+
+| File | Contents | Git |
+|------|----------|-----|
+| `<ProductName>Config.xcconfig` | Actual values from ENV_ variables | Ignored |
+| `<ProductName>.xcconfig` | Wrapper with `#include?` | Tracked |
+
+The wrapper file is only created locally (not in CI) and only if it doesn't already exist.
+
 **Example:**
 
 ```bash
-export ENV_AppConfig_GA4_MEASUREMENT_ID="G-XXXXXXXXXX"
-export ENV_AppConfig_FEATURE_FLAG_BETA="true"
+export ENV_AnalyticsConfig_ga4MeasurementId="G-XXXXXXXXXX"
+export ENV_AnalyticsConfig_ga4ApiSecret="your-api-secret"
 
-./generate_xcconfig.sh ./Config
+./generate_xcconfig.sh ./Config MyApp
 ```
 
-**Generates `Config/AppConfig.xcconfig`:**
-```
-GA4_MEASUREMENT_ID = G-XXXXXXXXXX
-FEATURE_FLAG_BETA = true
+**First run creates two files:**
+
+`Config/MyAppConfig.xcconfig` (gitignored):
+```xcconfig
+ga4ApiSecret = your-api-secret
+ga4MeasurementId = G-XXXXXXXXXX
 ```
 
-**Usage in Xcode:**
+`Config/MyApp.xcconfig` (commit this):
+```xcconfig
+#include? "MyAppConfig.xcconfig"
+```
 
-1. Add the generated xcconfig to your project
-2. Reference in your target's build configuration
-3. Access via Info.plist: `$(GA4_MEASUREMENT_ID)`
-4. Or in Swift: `Bundle.main.infoDictionary?["GA4MeasurementId"]`
+**Xcode Setup:**
+
+1. Run the script locally to generate both files
+2. Add `MyApp.xcconfig` to your Xcode project configurations
+3. Add `MyAppConfig.xcconfig` to `.gitignore`
+4. Reference values in Info.plist: `$(ga4MeasurementId)`
+5. Access in Swift: `Bundle.main.object(forInfoDictionaryKey: "GA4MeasurementId") as? String`
 
 **Comparison:**
 
 | Aspect | generate_env_variables.sh | generate_xcconfig.sh |
 |--------|---------------------------|----------------------|
-| Output | Swift enum | xcconfig file |
-| Access | `Config.property` | `Bundle.main.infoDictionary?` |
+| Output | Multiple Swift enums | Single xcconfig file |
+| Access | `EnumName.property` | `Bundle.main.object(forInfoDictionaryKey:)` |
 | Type safety | Compile-time | Runtime |
-| Missing key | Build fails | Returns nil |
-| Xcode integration | Add to target | Add to build config |
+| Missing file | Build fails | Build succeeds, values empty |
+| Xcode integration | Add Swift files to target | Add xcconfig to build config |
 
-Choose based on whether you prefer compile-time safety or runtime flexibility.
+Choose `generate_xcconfig.sh` for CI/CD pipelines where you want builds to succeed even without credentials configured.
 
 ### ci_post_xcodebuild.sh
 
@@ -343,7 +371,7 @@ Xcode Cloud automatically discovers and executes scripts in the `ci_scripts/` di
 | Script | Trigger | Purpose |
 |--------|---------|---------|
 | `ci_post_clone.sh` | After repository clone | Runs SwiftLint |
-| `ci_pre_xcodebuild.sh` | Before build | Generates Swift config from env variables |
+| `ci_pre_xcodebuild.sh` | Before build | Generates xcconfig from env variables |
 | `ci_post_xcodebuild.sh` | After archive build | Uploads dSYMs, generates TestFlight notes |
 
 **Xcode Cloud and Submodules**
@@ -411,10 +439,11 @@ The scripts detect CI environments using these variables:
 | Variable | Description |
 |----------|-------------|
 | `CI` | Set in CI environments |
+| `CI_PRIMARY_REPOSITORY_PATH` | Xcode Cloud repository checkout path |
 | `CI_WORKSPACE_PATH` | Xcode Cloud workspace path |
 | `CI_ARCHIVE_PATH` | Path to the archive (post-build) |
 | `CI_DERIVED_DATA_PATH` | Derived data location |
-| `CI_PRODUCT` | Product name |
+| `CI_PRODUCT` | Product name (used for xcconfig file naming) |
 | `SRCROOT` | Xcode project source root (local builds) |
 | `BUILD_DIR` | Xcode build directory (local builds) |
 

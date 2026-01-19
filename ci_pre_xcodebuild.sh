@@ -12,5 +12,5 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Generate Swift files from ENV_ variables
-"$SCRIPT_DIR/generate_env_variables.sh" "${CI_PRIMARY_REPOSITORY_PATH}/Shared/EnvVariables"
+# Generate xcconfig files from ENV_ variables
+"$SCRIPT_DIR/generate_xcconfig.sh" "${CI_PRIMARY_REPOSITORY_PATH}/Config"
