@@ -38,7 +38,7 @@ This enables you to inject API keys, feature flags, and other configuration at b
 
 ### generate_xcconfig.sh
 
-Generates xcconfig files from all `ENV_` prefixed environment variables. This is the recommended approach for Xcode Cloud as it provides runtime flexibility - missing config files won't break the build.
+Generates xcconfig files from all `ENV_` prefixed environment variables.
 
 > **⚠️ Security Warning**
 >
@@ -73,8 +73,8 @@ generate_xcconfig.sh <output_directory> [product_name]
 
 | File | Contents | Git |
 |------|----------|-----|
+| `<ProductName>.xcconfig` | Project config that includes the dynamically generated <ProductName>Config.xcconfig (no values) | Tracked |
 | `<ProductName>Config.xcconfig` | Actual values from ENV_ variables | Ignored |
-| `<ProductName>.xcconfig` | Wrapper scaffolding (include only, no defaults) | Tracked |
 
 The wrapper file is only created locally (not in CI) and only if it doesn't already exist. It contains just the `#include?` directive - no default values. If the config file is missing, Xcode variables remain undefined and your code should handle nil gracefully.
 
