@@ -73,7 +73,7 @@ generate_xcconfig.sh <output_directory> [product_name]
 
 | File | Contents | Git |
 |------|----------|-----|
-| `<ProductName>.xcconfig` | Project config that includes the dynamically generated <ProductName>Config.xcconfig (no values) | Tracked |
+| `<ProductName>.xcconfig` | Project config that includes the dynamically generated `<ProductName>Config.xcconfig` (no values) | Tracked |
 | `<ProductName>Config.xcconfig` | Actual values from ENV_ variables | Ignored |
 
 The wrapper file is only created locally (not in CI) and only if it doesn't already exist. It contains just the `#include?` directive - no default values. If the config file is missing, Xcode variables remain undefined and your code should handle nil gracefully.
