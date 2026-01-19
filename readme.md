@@ -11,7 +11,6 @@ These scripts also served as the inspiration for the [Claude Code Release Plugin
   - [ci_post_clone.sh](#ci_post_clonesh)
   - [ci_pre_xcodebuild.sh](#ci_pre_xcodebuildsh)
   - [ci_post_xcodebuild.sh](#ci_post_xcodebuildsh)
-  - [generate_env_variables.sh](#generate_env_variablessh)
   - [generate_xcconfig.sh](#generate_xcconfigsh)
   - [swiftlint.sh](#swiftlintsh)
   - [firebase_upload_symbols.sh](#firebase_upload_symbolssh)
@@ -37,13 +36,13 @@ Xcode Cloud pre-build hook. Runs before xcodebuild starts. Calls `generate_xccon
 
 This enables you to inject API keys, feature flags, and other configuration at build time without committing them to source control.
 
-### generate_env_variables.sh
+### generate_xcconfig.sh
 
-Converts environment variables into Swift files. Uses a naming convention to determine file names and property names.
+Generates xcconfig files from all `ENV_` prefixed environment variables. This is the recommended approach for Xcode Cloud as it provides runtime flexibility - missing config files won't break the build.
 
 > **⚠️ Security Warning**
 >
-> This script generates **plain text** Swift constants. Values can be extracted from compiled binaries using simple tools like `strings`.
+> This script generates **plain text** xcconfig values. Values can be extracted from compiled binaries using simple tools like `strings`.
 >
 > **Appropriate for:**
 > - Analytics IDs (Google Analytics, Firebase)
@@ -58,63 +57,6 @@ Converts environment variables into Swift files. Uses a naming convention to det
 > - Any key that could cause financial or security damage if exposed
 >
 > For sensitive credentials, use a backend proxy (keys never leave your server) or a dedicated secrets manager with obfuscation.
-
-**Convention:**
-```
-ENV_<FileName>_<PropertyName>=value
-```
-
-**Example:**
-
-Set these environment variables (in Xcode Cloud or locally):
-```bash
-export ENV_AnalyticsConfig_ga4MeasurementId="G-XXXXXXXXXX"
-export ENV_AnalyticsConfig_ga4ApiKey="your-api-key"
-export ENV_FeatureFlags_enableBetaFeatures="true"
-```
-
-Run the script:
-```bash
-./generate_env_variables.sh ./Shared/EnvVariables
-```
-
-This generates:
-
-**AnalyticsConfig.swift**
-```swift
-import Foundation
-
-enum AnalyticsConfig {
-    static let ga4MeasurementId = "G-XXXXXXXXXX"
-    static let ga4ApiKey = "your-api-key"
-}
-```
-
-**FeatureFlags.swift**
-```swift
-import Foundation
-
-enum FeatureFlags {
-    static let enableBetaFeatures = "true"
-}
-```
-
-**Xcode Cloud Setup:**
-
-1. Go to App Store Connect → Xcode Cloud → Workflows
-2. Select your workflow → Environment Variables
-3. Add variables with `ENV_` prefix
-4. Mark sensitive values as "Secret"
-
-The generated files should be gitignored. For local development, create them manually or run the script with exported environment variables.
-
-### generate_xcconfig.sh
-
-Generates xcconfig files from all `ENV_` prefixed environment variables. This is the recommended approach for Xcode Cloud as it provides runtime flexibility - missing config files won't break the build.
-
-> **⚠️ Security Warning**
->
-> Same as above - values are plain text and extractable from binaries. Only use for low-sensitivity configuration.
 
 **Usage:**
 
@@ -165,18 +107,6 @@ ga4MeasurementId = G-XXXXXXXXXX
 3. Add `MyAppConfig.xcconfig` to `.gitignore`
 4. Reference values in Info.plist: `$(ga4MeasurementId)`
 5. Access in Swift: `Bundle.main.object(forInfoDictionaryKey: "GA4MeasurementId") as? String`
-
-**Comparison:**
-
-| Aspect | generate_env_variables.sh | generate_xcconfig.sh |
-|--------|---------------------------|----------------------|
-| Output | Multiple Swift enums | Single xcconfig file |
-| Access | `EnumName.property` | `Bundle.main.object(forInfoDictionaryKey:)` |
-| Type safety | Compile-time | Runtime |
-| Missing file | Build fails | Build succeeds, values empty |
-| Xcode integration | Add Swift files to target | Add xcconfig to build config |
-
-Choose `generate_xcconfig.sh` for CI/CD pipelines where you want builds to succeed even without credentials configured.
 
 ### ci_post_xcodebuild.sh
 
