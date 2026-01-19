@@ -74,9 +74,9 @@ generate_xcconfig.sh <output_directory> [product_name]
 | File | Contents | Git |
 |------|----------|-----|
 | `<ProductName>Config.xcconfig` | Actual values from ENV_ variables | Ignored |
-| `<ProductName>.xcconfig` | Wrapper with `#include?` | Tracked |
+| `<ProductName>.xcconfig` | Wrapper scaffolding (include only, no defaults) | Tracked |
 
-The wrapper file is only created locally (not in CI) and only if it doesn't already exist.
+The wrapper file is only created locally (not in CI) and only if it doesn't already exist. It contains just the `#include?` directive - no default values. If the config file is missing, Xcode variables remain undefined and your code should handle nil gracefully.
 
 **Example:**
 
@@ -89,15 +89,18 @@ export ENV_AnalyticsConfig_ga4ApiSecret="your-api-secret"
 
 **First run creates two files:**
 
-`Config/MyAppConfig.xcconfig` (gitignored):
+`Config/MyApp.xcconfig` (commit this - scaffolding only):
+```xcconfig
+//
+//  MyApp.xcconfig
+//
+#include? "MyAppConfig.xcconfig"
+```
+
+`Config/MyAppConfig.xcconfig` (gitignored - contains actual values):
 ```xcconfig
 ga4ApiSecret = your-api-secret
 ga4MeasurementId = G-XXXXXXXXXX
-```
-
-`Config/MyApp.xcconfig` (commit this):
-```xcconfig
-#include? "MyAppConfig.xcconfig"
 ```
 
 **Xcode Setup:**
@@ -105,8 +108,8 @@ ga4MeasurementId = G-XXXXXXXXXX
 1. Run the script locally to generate both files
 2. Add `MyApp.xcconfig` to your Xcode project configurations
 3. Add `MyAppConfig.xcconfig` to `.gitignore`
-4. Reference values in Info.plist: `$(ga4MeasurementId)`
-5. Access in Swift: `Bundle.main.object(forInfoDictionaryKey: "GA4MeasurementId") as? String`
+4. Reference values in Info.plist: `$(propertyName)`
+5. Access in Swift: `Bundle.main.object(forInfoDictionaryKey: "PropertyName") as? String ?? ""`
 
 ### ci_post_xcodebuild.sh
 
