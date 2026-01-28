@@ -28,6 +28,12 @@ if [ -n "$CI" ]; then
 	echo "note: Firebase Crashlytics: upload-symbols: cloud: Product: $CI_PRODUCT"
 	$CI_DERIVED_DATA_PATH/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/upload-symbols -gsp "$GOOGLE_PLIST" -p ios $CI_ARCHIVE_PATH/dSYMs/
 else
+	# Skip dSYM upload for Debug builds (faster iteration, no crash symbolication needed)
+	if [ "$CONFIGURATION" = "Debug" ]; then
+		echo "note: Firebase Crashlytics: skipping dSYM upload for Debug build"
+		exit 0
+	fi
+
 	GOOGLE_PLIST="${SRCROOT}/${PRODUCT_NAME}/GoogleService-Info.plist"
 
 	if [ ! -f "$GOOGLE_PLIST" ]; then
