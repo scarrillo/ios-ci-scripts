@@ -128,7 +128,27 @@ Installs and runs SwiftLint for code linting.
 | CI | Installs SwiftLint via Homebrew, lints the repository |
 | Local | Uses existing SwiftLint installation, lints SRCROOT |
 
-Configuration: `.swiftlint.yml` - A sample SwiftLint configuration is included. Customize it to match your project's coding standards. See the [SwiftLint Rules Directory](https://realm.github.io/SwiftLint/rule-directory.html) for available rules.
+**Configuration Files:**
+
+| File | Purpose |
+|------|---------|
+| `ci_scripts/.swiftlint.yml` | Base config with sensible defaults |
+| `.swiftlint.local.yml` | Project-specific overrides (gitignored) |
+
+The script automatically uses `.swiftlint.local.yml` if it exists, otherwise falls back to the base config.
+
+**Setup for project-specific exclusions:**
+
+```bash
+# Copy the template to your project root
+cp ci_scripts/.swiftlint.local.yml.example .swiftlint.local.yml
+
+# Edit to add your exclusions (e.g., generated code directories)
+```
+
+The local config uses `parent_config` to inherit all rules from the base config while adding project-specific exclusions.
+
+See the [SwiftLint Rules Directory](https://realm.github.io/SwiftLint/rule-directory.html) for available rules.
 
 ### firebase_upload_symbols.sh
 

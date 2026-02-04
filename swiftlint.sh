@@ -39,17 +39,20 @@ if [ -n "$CI" ]; then
 else
 	export PATH="$PATH:/opt/homebrew/bin"
     echo "note: SwiftLint Script: local"
-    SWIFT_LINT_TARGET="${SRCROOT}"
-    #SWIFT_LINT_FILE="${SWIFT_LINT_TARGET}/ci_scripts/.swiftlint.yml" # $SRCROOT / $PWD work locally
+    # SRCROOT is set by Xcode, fall back to PWD for command line usage
+    SWIFT_LINT_TARGET="${SRCROOT:-$PWD}"
 fi
 
 if which swiftlint >/dev/null; then
-    SWIFT_LINT_FILE="${SWIFT_LINT_TARGET}/ci_scripts/.swiftlint.yml"
+    # Use local config if it exists (inherits from ci_scripts), otherwise use base config
+    if [ -f "${SWIFT_LINT_TARGET}/.swiftlint.local.yml" ]; then
+        SWIFT_LINT_FILE="${SWIFT_LINT_TARGET}/.swiftlint.local.yml"
+    else
+        SWIFT_LINT_FILE="${SWIFT_LINT_TARGET}/ci_scripts/.swiftlint.yml"
+    fi
 
     echo "note: SwiftLint Script: Config: ${SWIFT_LINT_FILE}"
     swiftlint $STRICT_MODE --config "${SWIFT_LINT_FILE}" $SWIFT_LINT_TARGET
-    #THIS Works - Explicit path, just in case for xcode cloud
-    #swiftlint --config ./.swiftlint.yml
 else
     echo "warning: SwiftLint not installed"
 fi

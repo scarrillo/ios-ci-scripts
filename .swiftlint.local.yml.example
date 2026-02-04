@@ -1,0 +1,12 @@
+# Project-specific SwiftLint config
+# Inherits rules from ci_scripts/.swiftlint.yml
+parent_config: ci_scripts/.swiftlint.yml
+
+# Instructions:
+# 1) Copy to project root: cp ci_scripts/.swiftlint.local.yml.example .swiftlint.local.yml
+# 2) Add project-specific exclusions or rule overrides below
+
+# Example: exclude generated code directories
+# excluded:
+#   - Generated
+#   - Sources/Protos

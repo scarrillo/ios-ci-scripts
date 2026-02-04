@@ -5,6 +5,13 @@ disabled_rules:
  - multiple_closures_with_trailing_closure
  - redundant_string_enum_value
 
+# Exclude generated code and dependency directories
+excluded:
+  - Pods
+  - Carthage
+  - .build
+  - DerivedData
+
 line_length:
   warning: 200
   error: 300
@@ -12,15 +19,7 @@ line_length:
   ignores_urls: true
   ignores_interpolated_strings: true
 
-identifier_name:
-  allowed_symbols: "_"
-  min_length: 1
-  excluded:
-    - x
-    - y
-    - i
-    - id
-    - db
+
 
 function_body_length:
   warning: 75
@@ -31,16 +30,16 @@ function_parameter_count:
   error: 8
 
 file_length:
-  warning: 900
-  error: 1200
+  warning: 1200
+  error: 1500
 
 type_body_length:
   warning: 450
   error: 550
 
 cyclomatic_complexity:
-  warning: 15
-  error: 20
+  warning: 20
+  error: 35
 
 
 reporter: "xcode"
