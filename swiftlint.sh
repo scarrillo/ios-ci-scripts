@@ -45,6 +45,8 @@ fi
 
 if which swiftlint >/dev/null; then
     # Use local config if it exists (inherits from ci_scripts), otherwise use base config
+    echo "note: SwiftLint Script: Looking for: ${SWIFT_LINT_TARGET}/.swiftlint.local.yml"
+    ls -la "${SWIFT_LINT_TARGET}"/.swiftlint* 2>/dev/null || echo "note: No .swiftlint* files found"
     if [ -f "${SWIFT_LINT_TARGET}/.swiftlint.local.yml" ]; then
         SWIFT_LINT_FILE="${SWIFT_LINT_TARGET}/.swiftlint.local.yml"
     else
