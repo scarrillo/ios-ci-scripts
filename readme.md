@@ -15,6 +15,13 @@ These scripts also served as the inspiration for the [Claude Code Release Plugin
   - [swiftlint.sh](#swiftlintsh)
   - [firebase_upload_symbols.sh](#firebase_upload_symbolssh)
   - [testflight_whattotest.sh](#testflight_whattotestsh)
+- [Claude Code Lint Hooks](#claude-code-lint-hooks)
+  - [post-edit-lint.sh](#hooks/post-edit-lintsh)
+  - [pre-commit-lint.sh](#hooks/pre-commit-lintsh)
+  - [Setup](#hook-setup)
+  - [Prerequisites](#hook-prerequisites)
+  - [Configuration Precedence](#configuration-precedence)
+  - [Project-Specific Exclusions](#project-specific-exclusions)
 - [Installation](#installation)
   - [Step 1: Add as a Git Submodule](#step-1-add-as-a-git-submodule)
   - [Step 2: Configure Xcode Build Phases (Local Builds)](#step-2-configure-xcode-build-phases-local-builds)
@@ -228,6 +235,106 @@ git push origin -f rel.v1.2.4    # Force-push triggers new Xcode Cloud build
 git push && git push origin rel.v1.0.1
 ```
 
+## Claude Code Lint Hooks
+
+Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that provide consistent swift-format and SwiftLint feedback across all projects using this submodule. The hooks live in `hooks/` and are referenced by each project's `.claude/settings.json`.
+
+### hooks/post-edit-lint.sh
+
+**PostToolUse** hook for `Edit|Write`. Runs after Claude edits or creates a Swift file, giving immediate lint feedback per file.
+
+| Behavior | Detail |
+|----------|--------|
+| Skips non-`.swift` files | Exits silently |
+| swift-format | Lint-only (no auto-fix) — warns on issues, doesn't block |
+| SwiftLint | Reports errors and warnings — doesn't block edits |
+| Missing tools | Warns but allows the edit to proceed |
+
+### hooks/pre-commit-lint.sh
+
+**PreToolUse** hook for `Bash(git commit*)`. Runs before Claude commits, acting as a final formatting and lint gate.
+
+| Behavior | Detail |
+|----------|--------|
+| swift-format | Auto-formats staged `.swift` files in-place, re-stages them |
+| SwiftLint | Lints staged files — **blocks commit on errors** (exit 2) |
+| Missing tools | **Blocks commit** (exit 2) — both tools are required |
+| No staged Swift files | Skips silently |
+
+### Hook Setup
+
+Add the following to your project's `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/ci_scripts/hooks/post-edit-lint.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash(git commit*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/ci_scripts/hooks/pre-commit-lint.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`$CLAUDE_PROJECT_DIR` is set automatically by Claude Code to the project root, so the paths resolve correctly regardless of where Claude invokes the hook from.
+
+### Hook Prerequisites
+
+| Tool | Install | Required for |
+|------|---------|-------------|
+| swift-format | Included with Xcode (Swift 5.9+) | Both hooks |
+| SwiftLint | `brew install swiftlint` | Both hooks |
+| jq | `brew install jq` | Both hooks (parses hook input) |
+
+### Configuration Precedence
+
+Both hooks auto-detect SwiftLint config using this priority:
+
+1. `.swiftlint.local.yml` in project root (project-specific overrides)
+2. `ci_scripts/.swiftlint.yml` (shared base config)
+3. SwiftLint defaults (no config file found)
+
+swift-format uses `.swift-format` in the project root. If the file doesn't exist, swift-format is skipped.
+
+### Project-Specific Exclusions
+
+The hooks contain **no hardcoded path exclusions**. Each project handles exclusions through its own config files:
+
+| Tool | Exclusion method |
+|------|-----------------|
+| SwiftLint | `excluded:` key in `.swiftlint.local.yml` |
+| swift-format | Not natively supported — files are only linted when Claude edits them or stages them for commit |
+
+**Example `.swiftlint.local.yml`** for project-specific exclusions:
+
+```yaml
+parent_config: ci_scripts/.swiftlint.yml
+
+excluded:
+  - data/emoji-generated
+  - scripts
+  - Pods
+  - .build
+```
+
 ## Installation
 
 ### Step 1: Add as a Git Submodule
@@ -253,7 +360,12 @@ YourApp/
 │   ├── AppDelegate.swift
 │   ├── GoogleService-Info.plist
 │   └── ...
-├── ci_scripts/              # ← Submodule (this repo)
+├── .claude/
+│   └── settings.json        # ← Hook paths point to ci_scripts/hooks/
+├── ci_scripts/               # ← Submodule (this repo)
+│   ├── hooks/
+│   │   ├── post-edit-lint.sh
+│   │   └── pre-commit-lint.sh
 │   ├── ci_post_clone.sh
 │   ├── ci_post_xcodebuild.sh
 │   ├── firebase_upload_symbols.sh
