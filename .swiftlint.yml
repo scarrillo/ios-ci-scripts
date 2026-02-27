@@ -4,6 +4,18 @@ disabled_rules:
  - comment_spacing
  - multiple_closures_with_trailing_closure
  - redundant_string_enum_value
+ # Formatting owned by swift-format (auto-fixed on save/commit)
+ - trailing_semicolon        # swift-format: removes semicolons (DoNotUseSemicolons)
+ - opening_brace             # swift-format: enforces brace placement
+ - closing_brace             # swift-format: enforces brace placement
+ - statement_position        # swift-format: enforces else/catch on same line as closing brace
+ - comma                     # swift-format: enforces spacing after commas
+ - colon                     # swift-format: enforces spacing around colons
+ - return_arrow_whitespace   # swift-format: enforces spacing around ->
+ - void_return               # swift-format: replaces -> Void with -> () (NoVoidReturnOnFunctionSignature)
+ - leading_whitespace        # swift-format: enforces indentation
+ - trailing_whitespace       # swift-format: strips trailing whitespace
+ - vertical_whitespace       # swift-format: collapses excess blank lines (maximumBlankLines)
 
 # Exclude generated code and dependency directories
 excluded:
