@@ -28,6 +28,8 @@ These scripts also served as the inspiration for the [Claude Code Release Plugin
   - [Step 3: Xcode Cloud (Release Builds)](#step-3-xcode-cloud-release-builds)
 - [Updating the Submodule](#updating-the-submodule)
 - [Local Development: Run manually](#local-development-run-manually)
+- [Optional GitHub Actions](#optional-github-actions)
+  - [tag-on-merge.yml](#tag-on-mergeyml)
 - [Environment Variables](#environment-variables)
 - [License](#license)
 
@@ -366,6 +368,8 @@ YourApp/
 │   ├── hooks/
 │   │   ├── post-edit-lint.sh
 │   │   └── pre-commit-lint.sh
+│   ├── workflows/
+│   │   └── tag-on-merge.yml  # ← Copy to .github/workflows/
 │   ├── ci_post_clone.sh
 │   ├── ci_post_xcodebuild.sh
 │   ├── firebase_upload_symbols.sh
@@ -496,6 +500,27 @@ cd ci_scripts
 # Bump version and create release tag
 ./bump-version.sh
 ```
+
+## Optional GitHub Actions
+
+Workflow templates in `workflows/` that help automate Xcode Cloud builds. These are **not** active workflows — GitHub only executes workflows in `.github/workflows/`. Copy them into your project to use them.
+
+### tag-on-merge.yml
+Add this GitHub Action to automatically create/update a git tag when a PR is merged to main. This runs `bump-version.sh tag -y` to tag the current `MARKETING_VERSION` and push it to the remote.
+
+This will automatically trigger your Xcode Cloud workflow listening for tags prefixed with `rel.v*`. [Configure Xcode Cloud (Release Builds by tag)](#step-3-xcode-cloud-release-builds)
+
+**Install:**
+
+```bash
+cp ci_scripts/workflows/tag-on-merge.yml .github/workflows/tag-on-merge.yml
+```
+
+**Requirements:**
+- This repo as a submodule at `ci_scripts/`
+- `MARKETING_VERSION` set in your `.xcodeproj`
+- Repository permissions: `contents: write`
+
 
 ## Environment Variables
 

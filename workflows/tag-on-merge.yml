@@ -1,0 +1,48 @@
+# Tag on Merge
+#
+# Automatically creates/updates a version tag when a PR merges to main.
+# Uses bump-version.sh from the ci_scripts submodule.
+#
+# Installation:
+#   cp ci_scripts/workflows/tag-on-merge.yml .github/workflows/tag-on-merge.yml
+#
+# Prerequisites:
+#   - ios-ci-scripts added as a submodule at ci_scripts/
+#   - MARKETING_VERSION set in your .xcodeproj
+#
+# Permissions:
+#   Requires contents: write to create and push tags.
+
+name: Tag on Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+concurrency:
+  group: tag-on-merge
+  cancel-in-progress: false
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Create and push version tag
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          ./ci_scripts/bump-version.sh tag -y
