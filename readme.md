@@ -516,6 +516,9 @@ This will automatically trigger your Xcode Cloud workflow listening for tags pre
 cp ci_scripts/workflows/tag-on-merge.yml .github/workflows/tag-on-merge.yml
 ```
 
+Or ask [Claude Code](https://docs.anthropic.com/en/docs/claude-code):
+> Install the tag-on-merge GitHub Action from ci_scripts/workflows/
+
 **Requirements:**
 - This repo as a submodule at `ci_scripts/`
 - `MARKETING_VERSION` set in your `.xcodeproj`

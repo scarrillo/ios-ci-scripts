@@ -17,6 +17,13 @@
 set -e
 
 if [ -n "$CI" ]; then
+    # Install Metal Toolchain if project contains Metal shaders (required by Xcode 26+)
+    PROJECT_ROOT="${CI_PRIMARY_REPOSITORY_PATH:-$(dirname "$0")/..}"
+    if find "$PROJECT_ROOT" -maxdepth 5 -name "*.metal" | grep -q .; then
+        echo "note: ci_post_clone: installing Metal Toolchain"
+        xcodebuild -downloadComponent MetalToolchain
+    fi
+
     echo "note: ci_post_clone: exec swiftlint.sh"
     ./swiftlint.sh
 fi
