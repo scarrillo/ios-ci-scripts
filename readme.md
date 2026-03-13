@@ -76,9 +76,18 @@ generate_xcconfig.sh <output_directory> [product_name]
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `output_directory` | Where to write the xcconfig file | Required |
-| `product_name` | Name prefix for output file | `CI_PRODUCT` or `"App"` |
+| `product_name` | Product name — used for output file naming and ENV_ variable prefix | `CI_PRODUCT` or `"App"` |
 
 **Output:** `<output_dir>/<ProductName>Config.xcconfig` (gitignored — contains actual values)
+
+**Variable naming convention:**
+
+Environment variables follow the pattern `ENV_<ProductName>_<PropertyName>`. The product name maps to the `product_name` argument passed to the script. The script strips the `ENV_<ProductName>_` prefix and writes `<PropertyName> = <value>` to the xcconfig.
+
+```
+ENV_MyApp_apiKey=your-key        →  apiKey = your-key
+ENV_MyApp_measurementId=G-XXX    →  measurementId = G-XXX
+```
 
 **Sources (checked in order):**
 
@@ -96,9 +105,13 @@ Use [1Password Environments](https://developer.1password.com/docs/environments/)
 
 1. Install [1Password CLI](https://developer.1password.com/docs/cli/get-started/)
 2. Create an Environment in 1Password (**Developer → View Environments**)
-3. Add variables with `ENV_<Namespace>_` prefix (e.g., `ENV_AppConfig_apiKey`)
-4. Create a `.env` file in your project root (gitignored):
+3. Add variables with `ENV_<ProductName>_` prefix (e.g., `ENV_MyApp_apiKey`)
+4. Copy the example env file to your project root and fill in your values:
    ```bash
+   cp ci_scripts/.env.example .env
+   ```
+   ```bash
+   # .env (gitignored)
    OP_SERVICE_ACCOUNT_TOKEN=your-token
    OP_ENVIRONMENT_ID=your-env-id
    ```
@@ -112,27 +125,33 @@ Re-run step 5 whenever secrets change in the 1Password Environment.
 
 #### CI Setup (Xcode Cloud)
 
-1. Add `ENV_` prefixed variables in **App Store Connect → Environment Variables**
+1. Add `ENV_<ProductName>_` prefixed variables in **App Store Connect → Environment Variables**
 2. `ci_pre_xcodebuild.sh` calls this script automatically during builds
 
 #### Example
 
+For a product named "MyApp":
+
 ```bash
 # Variables in environment (from 1Password or CI)
-ENV_AppConfig_ga4MeasurementId=G-XXXXXXXXXX
-ENV_AppConfig_ga4ApiSecret=your-api-secret
+ENV_MyApp_apiKey=your-api-key
+ENV_MyApp_measurementId=G-XXXXXXXXXX
+```
+
+```bash
+./ci_scripts/generate_xcconfig.sh Config MyApp
 ```
 
 Generates `Config/MyAppConfig.xcconfig`:
 ```xcconfig
-ga4ApiSecret = your-api-secret
-ga4MeasurementId = G-XXXXXXXXXX
+apiKey = your-api-key
+measurementId = G-XXXXXXXXXX
 ```
 
 #### Xcode Integration
 
 1. Run the script to generate the xcconfig
-2. Add `MyAppConfig.xcconfig` to `.gitignore`
+2. Add `<ProductName>Config.xcconfig` to `.gitignore`
 3. Reference values in Info.plist: `$(propertyName)`
 4. Access in Swift: `Bundle.main.object(forInfoDictionaryKey: "PropertyName") as? String ?? ""`
 5. Handle missing values gracefully — if the xcconfig doesn't exist, variables are undefined

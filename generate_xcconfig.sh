@@ -2,9 +2,12 @@
 #
 # Generate xcconfig file from environment variables
 #
-# Converts ENV_<Namespace>_<PropertyName>=value environment variables into
+# Converts ENV_<ProductName>_<PropertyName>=value environment variables into
 # an xcconfig file for Xcode. Run once during project setup (or when secrets
 # change) — the generated file persists across builds.
+#
+# The product_name argument maps to the <ProductName> prefix in env vars:
+#   ENV_MyApp_apiKey=your-key  →  apiKey = your-key
 #
 # Sources (checked in order):
 #   1. ENV_ variables in the current shell environment
@@ -14,27 +17,26 @@
 #   generate_xcconfig.sh <output_directory> [product_name]
 #
 #   output_directory: Where to write the xcconfig file
-#   product_name:     Name for output file (default: CI_PRODUCT or "App")
+#   product_name:     Product name — used for file naming and ENV_ prefix
+#                     (default: CI_PRODUCT or "App")
 #                     Output: <output_dir>/<product_name>Config.xcconfig
 #
 # --- Local Setup (1Password Environments) ---
 #
 #   1. Install 1Password CLI: https://developer.1password.com/docs/cli/get-started/
 #   2. Create an Environment in 1Password (Developer → View Environments)
-#   3. Add variables with ENV_<Namespace>_ prefix (e.g., ENV_AppConfig_apiKey)
-#   4. Create a .env file in your project root (gitignored):
-#        OP_SERVICE_ACCOUNT_TOKEN=your-token
-#        OP_ENVIRONMENT_ID=your-env-id
+#   3. Add variables with ENV_<ProductName>_ prefix (e.g., ENV_MyApp_apiKey)
+#   4. Copy ci_scripts/.env.example to your project root as .env
 #   5. Run once:
 #        source .env && op run --environment "$OP_ENVIRONMENT_ID" -- \
-#          ./ci_scripts/generate_xcconfig.sh <output_dir> [product_name]
+#          ./ci_scripts/generate_xcconfig.sh <output_dir> <product_name>
 #
 # --- CI Setup (Xcode Cloud) ---
 #
 #   1. Go to App Store Connect → Xcode Cloud → Environment Variables
-#   2. Add variables with ENV_<Namespace>_ prefix:
-#        ENV_AppConfig_apiKey=your-api-key
-#        ENV_AppConfig_measurementId=G-XXXXXXXXXX
+#   2. Add variables with ENV_<ProductName>_ prefix:
+#        ENV_MyApp_apiKey=your-api-key
+#        ENV_MyApp_measurementId=G-XXXXXXXXXX
 #   3. ci_pre_xcodebuild.sh calls this script automatically
 #
 
@@ -93,12 +95,12 @@ echo "  - No existing $output_file"
 echo ""
 echo "Local setup (1Password Environments):"
 echo "  1. Create an Environment in 1Password (Developer → View Environments)"
-echo "  2. Add variables with ENV_<Namespace>_ prefix"
-echo "  3. Create .env in project root with OP_SERVICE_ACCOUNT_TOKEN and OP_ENVIRONMENT_ID"
+echo "  2. Add variables with ENV_${PRODUCT_NAME}_ prefix (e.g., ENV_${PRODUCT_NAME}_myKey)"
+echo "  3. Copy ci_scripts/.env.example to project root as .env and fill in values"
 echo "  4. Run: source .env && op run --environment \"\$OP_ENVIRONMENT_ID\" -- \\"
 echo "       ./ci_scripts/generate_xcconfig.sh $(basename "$OUTPUT_DIR") ${PRODUCT_NAME}"
 echo ""
 echo "CI setup (Xcode Cloud):"
-echo "  1. Add ENV_ prefixed variables in App Store Connect → Environment Variables"
+echo "  1. Add ENV_${PRODUCT_NAME}_ prefixed variables in App Store Connect → Environment Variables"
 echo "  2. ci_pre_xcodebuild.sh calls this script automatically"
 exit 1
