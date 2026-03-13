@@ -47,7 +47,7 @@ This enables you to inject API keys, feature flags, and other configuration at b
 
 ### generate_xcconfig.sh
 
-Generates xcconfig files from all `ENV_` prefixed environment variables.
+Converts `ENV_` prefixed environment variables into an xcconfig file for Xcode. Run once during project setup (or when secrets change) — the generated file persists across builds.
 
 > **⚠️ Security Warning**
 >
@@ -78,47 +78,64 @@ generate_xcconfig.sh <output_directory> [product_name]
 | `output_directory` | Where to write the xcconfig file | Required |
 | `product_name` | Name prefix for output file | `CI_PRODUCT` or `"App"` |
 
-**Generated Files:**
+**Output:** `<output_dir>/<ProductName>Config.xcconfig` (gitignored — contains actual values)
 
-| File | Contents | Git |
-|------|----------|-----|
-| `<ProductName>.xcconfig` | Project config that includes the dynamically generated `<ProductName>Config.xcconfig` (no values) | Tracked |
-| `<ProductName>Config.xcconfig` | Actual values from ENV_ variables | Ignored |
+**Sources (checked in order):**
 
-The wrapper file is only created locally (not in CI) and only if it doesn't already exist. It contains just the `#include?` directive - no default values. If the config file is missing, Xcode variables remain undefined and your code should handle nil gracefully.
+| Source | How ENV_ variables are set |
+|--------|---------------------------|
+| CI (Xcode Cloud) | App Store Connect → Environment Variables |
+| Local (1Password) | `op run --environment <id>` injects variables into the shell |
+| Fallback | Existing xcconfig used as-is |
 
-**Example:**
+#### Local Setup (1Password Environments)
+
+Use [1Password Environments](https://developer.1password.com/docs/environments/) to manage config variables locally. Each developer runs the script once during project initialization — the generated xcconfig persists across builds.
+
+**One-time setup:**
+
+1. Install [1Password CLI](https://developer.1password.com/docs/cli/get-started/)
+2. Create an Environment in 1Password (**Developer → View Environments**)
+3. Add variables with `ENV_<Namespace>_` prefix (e.g., `ENV_AppConfig_apiKey`)
+4. Create a `.env` file in your project root (gitignored):
+   ```bash
+   OP_SERVICE_ACCOUNT_TOKEN=your-token
+   OP_ENVIRONMENT_ID=your-env-id
+   ```
+5. Generate the xcconfig:
+   ```bash
+   source .env && op run --environment "$OP_ENVIRONMENT_ID" -- \
+     ./ci_scripts/generate_xcconfig.sh Config MyApp
+   ```
+
+Re-run step 5 whenever secrets change in the 1Password Environment.
+
+#### CI Setup (Xcode Cloud)
+
+1. Add `ENV_` prefixed variables in **App Store Connect → Environment Variables**
+2. `ci_pre_xcodebuild.sh` calls this script automatically during builds
+
+#### Example
 
 ```bash
-export ENV_AnalyticsConfig_ga4MeasurementId="G-XXXXXXXXXX"
-export ENV_AnalyticsConfig_ga4ApiSecret="your-api-secret"
-
-./generate_xcconfig.sh ./Config MyApp
+# Variables in environment (from 1Password or CI)
+ENV_AppConfig_ga4MeasurementId=G-XXXXXXXXXX
+ENV_AppConfig_ga4ApiSecret=your-api-secret
 ```
 
-**First run creates two files:**
-
-`Config/MyApp.xcconfig` (commit this - scaffolding only):
-```xcconfig
-//
-//  MyApp.xcconfig
-//
-#include? "MyAppConfig.xcconfig"
-```
-
-`Config/MyAppConfig.xcconfig` (gitignored - contains actual values):
+Generates `Config/MyAppConfig.xcconfig`:
 ```xcconfig
 ga4ApiSecret = your-api-secret
 ga4MeasurementId = G-XXXXXXXXXX
 ```
 
-**Xcode Setup:**
+#### Xcode Integration
 
-1. Run the script locally to generate both files
-2. Add `MyApp.xcconfig` to your Xcode project configurations
-3. Add `MyAppConfig.xcconfig` to `.gitignore`
-4. Reference values in Info.plist: `$(propertyName)`
-5. Access in Swift: `Bundle.main.object(forInfoDictionaryKey: "PropertyName") as? String ?? ""`
+1. Run the script to generate the xcconfig
+2. Add `MyAppConfig.xcconfig` to `.gitignore`
+3. Reference values in Info.plist: `$(propertyName)`
+4. Access in Swift: `Bundle.main.object(forInfoDictionaryKey: "PropertyName") as? String ?? ""`
+5. Handle missing values gracefully — if the xcconfig doesn't exist, variables are undefined
 
 ### ci_post_xcodebuild.sh
 
