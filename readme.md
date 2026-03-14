@@ -112,8 +112,8 @@ Use [1Password Environments](https://developer.1password.com/docs/environments/)
    ```
    ```bash
    # .env (gitignored)
-   OP_SERVICE_ACCOUNT_TOKEN=your-token
-   OP_ENVIRONMENT_ID=your-env-id
+   export OP_SERVICE_ACCOUNT_TOKEN=your-token
+   export OP_ENVIRONMENT_ID=your-env-id
    ```
 5. Generate the xcconfig:
    ```bash
