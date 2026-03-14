@@ -117,9 +117,12 @@ Use [1Password Environments](https://developer.1password.com/docs/environments/)
    ```
 5. Generate the xcconfig:
    ```bash
-   source .env && op run --environment "$OP_ENVIRONMENT_ID" -- \
-     ./ci_scripts/generate_xcconfig.sh Config MyApp
+   (source .env && op run --environment "$OP_ENVIRONMENT_ID" -- \
+     ./ci_scripts/generate_xcconfig.sh Config MyApp)
    ```
+   The outer `()` runs everything in a subshell — `export`ed tokens are available to
+   `op run` (a child process) but are automatically discarded when the subshell exits,
+   so credentials don't persist in your shell session.
 
 Re-run step 5 whenever secrets change in the 1Password Environment.
 

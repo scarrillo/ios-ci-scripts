@@ -27,9 +27,9 @@
 #   2. Create an Environment in 1Password (Developer → View Environments)
 #   3. Add variables with ENV_<ProductName>_ prefix (e.g., ENV_MyApp_apiKey)
 #   4. Copy ci_scripts/.env.example to your project root as .env
-#   5. Run once:
-#        source .env && op run --environment "$OP_ENVIRONMENT_ID" -- \
-#          ./ci_scripts/generate_xcconfig.sh <output_dir> <product_name>
+#   5. Run once (subshell keeps tokens out of your session):
+#        (source .env && op run --environment "$OP_ENVIRONMENT_ID" -- \
+#          ./ci_scripts/generate_xcconfig.sh <output_dir> <product_name>)
 #
 # --- CI Setup (Xcode Cloud) ---
 #
