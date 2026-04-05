@@ -386,7 +386,7 @@ Add this repository as a git submodule named `ci_scripts` at your project root. 
 cd /path/to/YourApp
 
 # Add the submodule
-git submodule add https://github.com/user/ios-ci-scripts.git ci_scripts
+git submodule add https://github.com/scarrillo/ios-ci-scripts.git ci_scripts
 
 # Commit the submodule reference
 git commit -m "Add CI scripts submodule"
