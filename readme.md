@@ -12,6 +12,7 @@ These scripts also served as the inspiration for the [Claude Code Release Plugin
   - [ci_pre_xcodebuild.sh](#ci_pre_xcodebuildsh)
   - [ci_post_xcodebuild.sh](#ci_post_xcodebuildsh)
   - [generate_xcconfig.sh](#generate_xcconfigsh)
+  - [validate_xcconfig.sh](#validate_xcconfigsh)
   - [swiftlint.sh](#swiftlintsh)
   - [firebase_upload_symbols.sh](#firebase_upload_symbolssh)
   - [testflight_whattotest.sh](#testflight_whattotestsh)
@@ -158,6 +159,45 @@ measurementId = G-XXXXXXXXXX
 3. Reference values in Info.plist: `$(propertyName)`
 4. Access in Swift: `Bundle.main.object(forInfoDictionaryKey: "PropertyName") as? String ?? ""`
 5. Handle missing values gracefully — if the xcconfig doesn't exist, variables are undefined
+
+### validate_xcconfig.sh
+
+Validates that required build settings from a generated xcconfig are present and resolved. Designed to run as a Run Script build phase before compilation, failing the build early if configuration is missing.
+
+**Usage:**
+
+```bash
+validate_xcconfig.sh <key1> [key2] ...
+```
+
+The script performs two checks:
+
+1. **File check** — Verifies `${SRCROOT}/Config/${PROJECT_NAME}Config.xcconfig` exists
+2. **Key check** — Verifies each named key is set as a build setting and not an unresolved `$(...)` placeholder
+
+**Xcode Build Phase Setup:**
+
+Add as the first Run Script phase on each target (before Sources):
+
+| Setting | Value |
+|---------|-------|
+| Shell | `/bin/sh` |
+| Based on dependency analysis | Unchecked |
+
+Script:
+```bash
+./ci_scripts/validate_xcconfig.sh analyticsId apiKey
+```
+
+Input Files:
+```
+$(SRCROOT)/ci_scripts/validate_xcconfig.sh
+$(SRCROOT)/Config/$(PROJECT_NAME)Config.xcconfig
+```
+
+> **Note:** Input files are required for sandbox compatibility. Without them, sandboxed targets will deny file access to the script.
+
+This pairs with `generate_xcconfig.sh` — one generates the config, the other validates it at build time.
 
 ### ci_post_xcodebuild.sh
 
