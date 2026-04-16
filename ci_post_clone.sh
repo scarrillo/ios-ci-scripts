@@ -18,10 +18,20 @@ set -e
 
 if [ -n "$CI" ]; then
     # Install Metal Toolchain if project contains Metal shaders (required by Xcode 26+)
+    # Some Xcode Cloud images ship with the toolchain pre-installed; the download
+    # then fails with "already imported". Treat that as success and surface
+    # any other error.
     PROJECT_ROOT="${CI_PRIMARY_REPOSITORY_PATH:-$(dirname "$0")/..}"
     if find "$PROJECT_ROOT" -maxdepth 5 -name "*.metal" | grep -q .; then
-        echo "note: ci_post_clone: installing Metal Toolchain"
-        xcodebuild -downloadComponent MetalToolchain
+        echo "note: ci_post_clone: ensuring Metal Toolchain is installed"
+        if ! metal_output=$(xcodebuild -downloadComponent MetalToolchain 2>&1); then
+            if echo "$metal_output" | grep -q "already imported"; then
+                echo "note: ci_post_clone: Metal Toolchain already present, skipping"
+            else
+                echo "$metal_output" >&2
+                exit 1
+            fi
+        fi
     fi
 
     echo "note: ci_post_clone: exec swiftlint.sh"
