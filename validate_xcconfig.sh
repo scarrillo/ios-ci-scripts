@@ -10,7 +10,11 @@
 #   validate_xcconfig.sh <key1> [key2] ...
 #
 # Example (in Xcode Run Script):
-#   ./ci_scripts/validate_xcconfig.sh ga4MeasurementId ga4ApiSecret
+#   ./ci_scripts/validate_xcconfig.sh ga4ApiSecret
+#
+# Logs a `note:` line on start and per-key pass so the build log shows
+# positive confirmation the script ran, not just silent success. Values
+# are never echoed — only key names and pass/fail.
 #
 
 set -e
@@ -27,6 +31,8 @@ if [ ! -f "$XCCONFIG" ]; then
     exit 1
 fi
 
+echo "note: validate_xcconfig: checking ${PROJECT_NAME}Config.xcconfig for $# key(s): $*"
+
 # Check that each required key resolved to a value
 failed=0
 for key in "$@"; do
@@ -34,6 +40,8 @@ for key in "$@"; do
     if [ -z "$value" ] || case "$value" in '$('*) true;; *) false;; esac; then
         echo "error: '$key' not found in ${PROJECT_NAME}Config.xcconfig. Ensure the ENV_ variable is set and run generate_xcconfig.sh."
         failed=1
+    else
+        echo "note: validate_xcconfig: '$key' resolved OK"
     fi
 done
 
