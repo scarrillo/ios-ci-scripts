@@ -37,7 +37,7 @@ if [ -n "$CI" ]; then
 
     brew install swiftlint
 else
-	export PATH="$PATH:/opt/homebrew/bin"
+	export PATH="/opt/homebrew/bin:$PATH"
     echo "note: SwiftLint Script: local"
     # SRCROOT is set by Xcode, fall back to PWD for command line usage
     SWIFT_LINT_TARGET="${SRCROOT:-$PWD}"
@@ -54,7 +54,7 @@ if which swiftlint >/dev/null; then
     fi
 
     echo "note: SwiftLint Script: Config: ${SWIFT_LINT_FILE}"
-    swiftlint $STRICT_MODE --config "${SWIFT_LINT_FILE}" $SWIFT_LINT_TARGET
+    swiftlint lint $STRICT_MODE --config "${SWIFT_LINT_FILE}" $SWIFT_LINT_TARGET
 else
     echo "warning: SwiftLint not installed"
 fi
