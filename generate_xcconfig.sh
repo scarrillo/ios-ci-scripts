@@ -88,6 +88,20 @@ if [ -f "$output_file" ]; then
     exit 0
 fi
 
+# --- Detection: does the project actually consume this xcconfig? ---
+# Search the repo's Xcode project files (and other xcconfigs that might
+# include it) for a reference. If nothing consumes the file, config is
+# optional scaffolding for this project — skip generation instead of
+# failing the build. Projects that wire the xcconfig in get the hard
+# failure below, where it is a real error.
+search_root="$(dirname "$OUTPUT_DIR")"
+if ! grep -rq "${PRODUCT_NAME}Config.xcconfig" "$search_root" \
+        --include="project.pbxproj" --include="*.xcconfig" \
+        --exclude-dir="$(basename "$OUTPUT_DIR")" 2>/dev/null; then
+    echo "note: ${PRODUCT_NAME}Config.xcconfig is not referenced by any Xcode project — skipping config generation"
+    exit 0
+fi
+
 # No source available
 echo "Warning: No config source available"
 echo "  - No ENV_ variables found"
