@@ -35,7 +35,20 @@ if [ -n "$CI" ]; then
     echo "note: SwiftLint Script: Installing SwiftLint in CI: [$CI]"
     SWIFT_LINT_TARGET="${CI_WORKSPACE_PATH}/repository/"
 
-    brew install swiftlint
+    # Install the official prebuilt universal binary instead of Homebrew.
+    # Xcode Cloud's brew lives in the Intel /usr/local prefix and pours stale
+    # x86_64 bottles (e.g. a Sonoma bottle on Tahoe) that crash under Rosetta
+    # loading sourcekitdInProc from an arm64-only Xcode toolchain (SIGILL/132).
+    SWIFTLINT_VERSION="0.65.0"
+    SWIFTLINT_SHA256="d6cb0aa7a2f5f1ef306fc9e37bcb54dc9a26facc8f7784ac0c3dd3eccf5c6ba6"
+    SWIFTLINT_DIR="${TMPDIR:-/tmp}/swiftlint-${SWIFTLINT_VERSION}"
+    mkdir -p "$SWIFTLINT_DIR"
+    curl -fsSL -o "$SWIFTLINT_DIR/portable_swiftlint.zip" \
+        "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/portable_swiftlint.zip"
+    echo "${SWIFTLINT_SHA256}  ${SWIFTLINT_DIR}/portable_swiftlint.zip" | shasum -a 256 -c -
+    unzip -o -q "$SWIFTLINT_DIR/portable_swiftlint.zip" -d "$SWIFTLINT_DIR"
+    export PATH="$SWIFTLINT_DIR:$PATH"
+    echo "note: SwiftLint Script: Installed $(swiftlint version) at ${SWIFTLINT_DIR}"
 else
 	export PATH="/opt/homebrew/bin:$PATH"
     echo "note: SwiftLint Script: local"
