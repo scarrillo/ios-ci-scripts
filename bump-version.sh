@@ -72,7 +72,10 @@ read_version() {
         | sed -E 's/.*=[[:space:]]*//; s/;.*//; s|//.*||; s/[[:space:]]*$//'
 }
 
-if grep -q "MARKETING_VERSION" "$PROJECT_FILE"; then
+# Anchored: the pbxproj must actually *assign* the key. A mere mention — a
+# Run Script phase echoing $MARKETING_VERSION, say — must not win the gate,
+# or the xcconfig fallback never runs and the read below comes up empty.
+if grep -q -E "^[[:space:]]*MARKETING_VERSION[[:space:]]*=" "$PROJECT_FILE"; then
     VERSION_FILE="$PROJECT_FILE"
 else
     # Exclude this submodule and build products from the search.
@@ -233,9 +236,13 @@ if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# Update version in the source file (all occurrences). The pattern preserves
-# whatever follows the version — the pbxproj's `;`, or an xcconfig comment.
-sed -i '' -E "s/(MARKETING_VERSION[[:space:]]*=[[:space:]]*)$CURRENT_VERSION/\1$NEW_VERSION/g" "$VERSION_FILE"
+# Update version in the source file — every line that assigns it (a pbxproj
+# carries one per configuration). Anchored so a commented-out assignment is
+# left alone, and the version's dots are escaped so they cannot pattern-match
+# arbitrary characters. The pattern preserves whatever follows the version —
+# the pbxproj's `;`, or an xcconfig comment.
+ESCAPED_CURRENT=$(printf '%s' "$CURRENT_VERSION" | sed 's/\./\\./g')
+sed -i '' -E "s/^([[:space:]]*MARKETING_VERSION[[:space:]]*=[[:space:]]*)$ESCAPED_CURRENT/\1$NEW_VERSION/" "$VERSION_FILE"
 
 # Verify the update
 UPDATED_VERSION=$(read_version "$VERSION_FILE")
