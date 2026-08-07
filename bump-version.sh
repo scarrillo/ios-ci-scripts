@@ -57,11 +57,54 @@ fi
 
 echo "Using project: $(basename "$XCODEPROJ")"
 
+# Locate the version source.
+#
+# Projects authored in the Xcode GUI carry MARKETING_VERSION in
+# project.pbxproj (checked first — the original behavior). Projects that
+# centralize build settings in xcconfig files declare it there instead, and
+# the pbxproj has no such key. Support both:
+#   1. project.pbxproj, if it contains MARKETING_VERSION
+#   2. otherwise, exactly one *.xcconfig in the repo defining it
+read_version() {
+    # Tolerates both syntaxes: `MARKETING_VERSION = 1.2.3;` (pbxproj) and
+    # `MARKETING_VERSION = 1.2.3` (xcconfig, optionally with a // comment).
+    grep -m1 -E "^[[:space:]]*MARKETING_VERSION[[:space:]]*=" "$1" \
+        | sed -E 's/.*=[[:space:]]*//; s/;.*//; s|//.*||; s/[[:space:]]*$//'
+}
+
+if grep -q "MARKETING_VERSION" "$PROJECT_FILE"; then
+    VERSION_FILE="$PROJECT_FILE"
+else
+    # Exclude this submodule and build products from the search.
+    XCCONFIG_MATCHES=$(find "$PROJECT_ROOT" \
+        -name "*.xcconfig" \
+        -not -path "*/ci_scripts/*" \
+        -not -path "*/.build/*" \
+        -not -path "*/DerivedData/*" \
+        -not -path "*/node_modules/*" \
+        -exec grep -l -E "^[[:space:]]*MARKETING_VERSION[[:space:]]*=" {} + 2>/dev/null || true)
+
+    MATCH_COUNT=$(echo "$XCCONFIG_MATCHES" | grep -c . || true)
+
+    if [ "$MATCH_COUNT" -eq 0 ]; then
+        echo "Error: Could not find MARKETING_VERSION in project.pbxproj or any .xcconfig"
+        exit 1
+    elif [ "$MATCH_COUNT" -gt 1 ]; then
+        echo "Error: MARKETING_VERSION is defined in multiple .xcconfig files:"
+        echo "$XCCONFIG_MATCHES" | sed 's/^/  /'
+        echo "Consolidate to a single definition so the version source is unambiguous."
+        exit 1
+    fi
+
+    VERSION_FILE="$XCCONFIG_MATCHES"
+    echo "Version source: ${VERSION_FILE#"$PROJECT_ROOT"/}"
+fi
+
 # Get current version
-CURRENT_VERSION=$(grep -m1 "MARKETING_VERSION" "$PROJECT_FILE" | sed 's/.*= \(.*\);/\1/')
+CURRENT_VERSION=$(read_version "$VERSION_FILE")
 
 if [ -z "$CURRENT_VERSION" ]; then
-    echo "Error: Could not find MARKETING_VERSION in project file"
+    echo "Error: Could not find MARKETING_VERSION in $VERSION_FILE"
     exit 1
 fi
 
@@ -190,22 +233,23 @@ if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# Update version in project file (all occurrences)
-sed -i '' "s/MARKETING_VERSION = $CURRENT_VERSION;/MARKETING_VERSION = $NEW_VERSION;/g" "$PROJECT_FILE"
+# Update version in the source file (all occurrences). The pattern preserves
+# whatever follows the version — the pbxproj's `;`, or an xcconfig comment.
+sed -i '' -E "s/(MARKETING_VERSION[[:space:]]*=[[:space:]]*)$CURRENT_VERSION/\1$NEW_VERSION/g" "$VERSION_FILE"
 
 # Verify the update
-UPDATED_VERSION=$(grep -m1 "MARKETING_VERSION" "$PROJECT_FILE" | sed 's/.*= \(.*\);/\1/')
+UPDATED_VERSION=$(read_version "$VERSION_FILE")
 
 if [ "$UPDATED_VERSION" != "$NEW_VERSION" ]; then
     echo "Error: Version update failed"
     exit 1
 fi
 
-echo "Updated project.pbxproj to version $NEW_VERSION"
+echo "Updated ${VERSION_FILE#"$PROJECT_ROOT"/} to version $NEW_VERSION"
 
 # Commit the version change
 echo "Committing version bump..."
-git add "$PROJECT_FILE"
+git add "$VERSION_FILE"
 git commit -m "Bump version to $NEW_VERSION"
 
 # Create git tag
