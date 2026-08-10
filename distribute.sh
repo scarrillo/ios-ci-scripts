@@ -18,6 +18,16 @@
 # Firebase SDK in the app. Registering the iOS app in a Firebase project is
 # enough to obtain the App ID; no GoogleService-Info.plist needs shipping.
 #
+# Phases:
+#   Phase 1 (current) — local. Runs on a developer machine: auth is the
+#   firebase CLI's cached login, signing is local Xcode with
+#   -allowProvisioningUpdates. This is the supported path today.
+#   Phase 2 (later) — CI. Auth via ambient credentials
+#   (GOOGLE_APPLICATION_CREDENTIALS service account, or workload identity);
+#   signing material provisioned into the runner. Not built yet — but the
+#   auth preflight below already accepts ambient credentials, so a CI
+#   environment is not blocked by an interactive-login check.
+#
 # Signing: the archive/export runs with -allowProvisioningUpdates, so Xcode
 # manages the distribution certificate and the ad-hoc profile. New tester
 # devices must be registered in the Apple Developer portal (Firebase collects
@@ -44,6 +54,14 @@ while [ $# -gt 0 ]; do
             SKIP_UPLOAD=true
             ;;
         --notes)
+            # Without this guard, `--notes` as the final argument leaves the
+            # loop's own shift with nothing to consume, and set -e kills the
+            # script with no message at all.
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "Error: --notes requires a value"
+                echo "Usage: ./ci_scripts/distribute.sh [--skip-upload] [--notes \"release notes\"]"
+                exit 1
+            fi
             shift
             RELEASE_NOTES="$1"
             ;;
@@ -98,9 +116,14 @@ if [ "$SKIP_UPLOAD" != true ]; then
     fi
 
     # Expired auth fails late and cryptically inside the upload; check first.
-    if ! firebase login:list 2>/dev/null | grep -q "Logged in"; then
-        echo "Error: firebase CLI is not authenticated. Run: firebase login"
-        exit 1
+    # Ambient credentials (Phase 2, CI) never appear in login:list — a set
+    # GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_TOKEN is its own evidence,
+    # so only the interactive path is gated on a cached login.
+    if [ -z "$GOOGLE_APPLICATION_CREDENTIALS" ] && [ -z "$FIREBASE_TOKEN" ]; then
+        if ! firebase login:list 2>/dev/null | grep -q "Logged in"; then
+            echo "Error: firebase CLI is not authenticated. Run: firebase login"
+            exit 1
+        fi
     fi
 fi
 

@@ -359,6 +359,18 @@ the next export picks them up automatically. One-time prerequisites: a
 Firebase project with the app's bundle ID registered as an iOS app, the
 `firebase` CLI installed and logged in, and at least one registered device.
 
+**Phases:**
+
+- **Phase 1 (current) — local.** Runs on a developer machine: auth is the
+  firebase CLI's cached login (`firebase login`), signing is local Xcode.
+  This is the supported path today.
+- **Phase 2 (later) — CI.** Auth via ambient credentials
+  (`GOOGLE_APPLICATION_CREDENTIALS` service account, or workload identity)
+  and signing material provisioned into the runner. Not built yet — the auth
+  preflight already accepts ambient credentials, so a CI environment is not
+  blocked by the interactive-login check, but the signing half is the real
+  work and has deliberately not been started.
+
 ## Claude Code Lint Hooks
 
 Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that provide consistent swift-format and SwiftLint feedback across all projects using this submodule. The hooks live in `hooks/` and are referenced by each project's `.claude/settings.json`.
