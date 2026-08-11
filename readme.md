@@ -16,6 +16,7 @@ These scripts also served as the inspiration for the [Claude Code Release Plugin
   - [swiftlint.sh](#swiftlintsh)
   - [firebase_upload_symbols.sh](#firebase_upload_symbolssh)
   - [testflight_whattotest.sh](#testflight_whattotestsh)
+  - [distribute.sh](#distributesh)
 - [Claude Code Lint Hooks](#claude-code-lint-hooks)
   - [post-edit-lint.sh](#hooks/post-edit-lintsh)
   - [pre-commit-lint.sh](#hooks/pre-commit-lintsh)
@@ -315,6 +316,60 @@ git push origin -f rel.v1.2.4    # Force-push triggers new Xcode Cloud build
 # Push commit and tag to remote
 git push && git push origin rel.v1.0.1
 ```
+
+### distribute.sh
+
+Builds a Release archive, exports an ad-hoc IPA, and uploads it to
+[Firebase App Distribution](https://firebase.google.com/docs/app-distribution).
+An alternative to TestFlight that requires no App Store Connect record and no
+review — suited to friends-and-family distribution.
+
+App Distribution is delivery only: the app itself needs no Firebase SDK and no
+`GoogleService-Info.plist`. Registering the iOS app in a Firebase project is
+enough to obtain the App ID the upload needs.
+
+**Configuration** (project-root `.env`, see `.env.example`):
+
+| Variable | Purpose |
+| --- | --- |
+| `FIREBASE_APP_ID` | Required. Firebase console → Project settings → your iOS app |
+| `FIREBASE_TESTER_GROUPS` | Optional comma-separated tester group aliases |
+| `SCHEME` | Optional; defaults to the `.xcodeproj` basename |
+
+**Usage:**
+
+```bash
+# Build, export, upload
+./ci_scripts/distribute.sh
+
+# Build and export only — verify signing without distributing
+./ci_scripts/distribute.sh --skip-upload
+
+# Override the generated release notes
+./ci_scripts/distribute.sh --notes "Fixes the landscape share card"
+```
+
+Release notes default to the commit subjects since the last `rel.v*` tag,
+which pairs with [bump-version.sh](#bump-versionsh)'s tagging.
+
+**Signing:** runs with `-allowProvisioningUpdates`, so Xcode manages the
+distribution certificate and ad-hoc profile. New tester devices must be added
+to the Apple Developer portal (App Distribution collects UDIDs from testers);
+the next export picks them up automatically. One-time prerequisites: a
+Firebase project with the app's bundle ID registered as an iOS app, the
+`firebase` CLI installed and logged in, and at least one registered device.
+
+**Phases:**
+
+- **Phase 1 (current) — local.** Runs on a developer machine: auth is the
+  firebase CLI's cached login (`firebase login`), signing is local Xcode.
+  This is the supported path today.
+- **Phase 2 (later) — CI.** Auth via ambient credentials
+  (`GOOGLE_APPLICATION_CREDENTIALS` service account, or workload identity)
+  and signing material provisioned into the runner. Not built yet — the auth
+  preflight already accepts ambient credentials, so a CI environment is not
+  blocked by the interactive-login check, but the signing half is the real
+  work and has deliberately not been started.
 
 ## Claude Code Lint Hooks
 
