@@ -17,7 +17,10 @@
 
 set -e
 
-if [ -n "$CI" ]; then
+# CI_WORKSPACE_PATH is Xcode Cloud's own variable — generic $CI is exported by
+# every CI system (GitHub Actions, etc.), where the Xcode Cloud branch's
+# CI_* paths are unset and set -e fails the build.
+if [ -n "$CI_WORKSPACE_PATH" ]; then
 	# Honor a caller-provided GOOGLE_PLIST; default preserves existing behavior.
 	GOOGLE_PLIST="${GOOGLE_PLIST:-$CI_WORKSPACE_PATH/repository/$CI_PRODUCT/GoogleService-Info.plist}"
 
