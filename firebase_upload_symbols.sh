@@ -20,6 +20,11 @@ set -e
 # CI_WORKSPACE_PATH is Xcode Cloud's own variable — generic $CI is exported by
 # every CI system (GitHub Actions, etc.), where the Xcode Cloud branch's
 # CI_* paths are unset and set -e fails the build.
+#
+# This branch is for Xcode Cloud's POST-XCODEBUILD ci_scripts context only:
+# CI_ARCHIVE_PATH exists after the archive completes. Invoking this script as
+# a build phase ON Xcode Cloud would land here mid-archive with an empty
+# CI_ARCHIVE_PATH — run it from ci_post_xcodebuild.sh instead.
 if [ -n "$CI_WORKSPACE_PATH" ]; then
 	# Honor a caller-provided GOOGLE_PLIST; default preserves existing behavior.
 	GOOGLE_PLIST="${GOOGLE_PLIST:-$CI_WORKSPACE_PATH/repository/$CI_PRODUCT/GoogleService-Info.plist}"
@@ -30,7 +35,7 @@ if [ -n "$CI_WORKSPACE_PATH" ]; then
 	fi
 
 	echo "note: Firebase Crashlytics: upload-symbols: cloud: Product: $CI_PRODUCT"
-	$CI_DERIVED_DATA_PATH/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/upload-symbols -gsp "$GOOGLE_PLIST" -p ios $CI_ARCHIVE_PATH/dSYMs/
+	"$CI_DERIVED_DATA_PATH/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/upload-symbols" -gsp "$GOOGLE_PLIST" -p ios "$CI_ARCHIVE_PATH/dSYMs/"
 else
 	# Skip dSYM upload for Debug builds (faster iteration, no crash symbolication needed)
 	if [ "$CONFIGURATION" = "Debug" ]; then
