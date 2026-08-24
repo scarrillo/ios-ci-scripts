@@ -18,10 +18,11 @@
 set -e
 
 if [ -n "$CI" ]; then
-	GOOGLE_PLIST="$CI_WORKSPACE_PATH/repository/$CI_PRODUCT/GoogleService-Info.plist"
+	# Honor a caller-provided GOOGLE_PLIST; default preserves existing behavior.
+	GOOGLE_PLIST="${GOOGLE_PLIST:-$CI_WORKSPACE_PATH/repository/$CI_PRODUCT/GoogleService-Info.plist}"
 
 	if [ ! -f "$GOOGLE_PLIST" ]; then
-		echo "note: Firebase Crashlytics: skipping - GoogleService-Info.plist not found"
+		echo "note: Firebase Crashlytics: skipping - GoogleService-Info.plist not found at $GOOGLE_PLIST"
 		exit 0
 	fi
 
@@ -34,10 +35,11 @@ else
 		exit 0
 	fi
 
-	GOOGLE_PLIST="${SRCROOT}/${PRODUCT_NAME}/GoogleService-Info.plist"
+	# Honor a caller-provided GOOGLE_PLIST; default preserves existing behavior.
+	GOOGLE_PLIST="${GOOGLE_PLIST:-${SRCROOT}/${PRODUCT_NAME}/GoogleService-Info.plist}"
 
 	if [ ! -f "$GOOGLE_PLIST" ]; then
-		echo "note: Firebase Crashlytics: skipping - GoogleService-Info.plist not found"
+		echo "note: Firebase Crashlytics: skipping - GoogleService-Info.plist not found at $GOOGLE_PLIST"
 		exit 0
 	fi
 
@@ -47,6 +49,8 @@ else
 	LOCAL_BUILD_DIR_PATH="${BUILD_DIR%/Build/*}/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics"
 
 	# Reference: https://github.com/firebase/firebase-ios-sdk/blob/main/Crashlytics/run
-	# The /run script calls upload-symbols internally, so we don't need to invoke it separately.
-	"${LOCAL_BUILD_DIR_PATH}/run"
+	# The /run script forwards its arguments to upload-symbols — pass the
+	# resolved plist explicitly so a GOOGLE_PLIST override is actually honored
+	# (the existence check above guarantees the path is valid).
+	"${LOCAL_BUILD_DIR_PATH}/run" -gsp "$GOOGLE_PLIST"
 fi
