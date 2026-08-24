@@ -18,7 +18,8 @@
 set -e
 
 if [ -n "$CI" ]; then
-	GOOGLE_PLIST="$CI_WORKSPACE_PATH/repository/$CI_PRODUCT/GoogleService-Info.plist"
+	# Honor a caller-provided GOOGLE_PLIST; default preserves existing behavior.
+	GOOGLE_PLIST="${GOOGLE_PLIST:-$CI_WORKSPACE_PATH/repository/$CI_PRODUCT/GoogleService-Info.plist}"
 
 	if [ ! -f "$GOOGLE_PLIST" ]; then
 		echo "note: Firebase Crashlytics: skipping - GoogleService-Info.plist not found"
@@ -34,7 +35,8 @@ else
 		exit 0
 	fi
 
-	GOOGLE_PLIST="${SRCROOT}/${PRODUCT_NAME}/GoogleService-Info.plist"
+	# Honor a caller-provided GOOGLE_PLIST; default preserves existing behavior.
+	GOOGLE_PLIST="${GOOGLE_PLIST:-${SRCROOT}/${PRODUCT_NAME}/GoogleService-Info.plist}"
 
 	if [ ! -f "$GOOGLE_PLIST" ]; then
 		echo "note: Firebase Crashlytics: skipping - GoogleService-Info.plist not found"
