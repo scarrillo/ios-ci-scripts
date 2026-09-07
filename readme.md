@@ -713,6 +713,8 @@ Workflow templates in `workflows/` that help automate Xcode Cloud builds. These 
 ### tag-on-merge.yml
 Add this GitHub Action to automatically create/update a git tag when a PR is merged to main. This runs `bump-version.sh tag -y` to tag the current `MARKETING_VERSION` and push it to the remote.
 
+The tag targets the PR's merged commit, even if `main` advances before the job runs.
+
 This will automatically trigger your Xcode Cloud workflow listening for tags prefixed with `rel.v*`. [Configure Xcode Cloud (Release Builds by tag)](#step-3-xcode-cloud-release-builds)
 
 **Install:**
