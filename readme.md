@@ -371,6 +371,44 @@ Firebase project with the app's bundle ID registered as an iOS app, the
   blocked by the interactive-login check, but the signing half is the real
   work and has deliberately not been started.
 
+## Git and Husky Pre-commit Hook
+
+`hooks/pre-commit.sh` checks staged Swift files from plain Git, Husky, or a
+terminal. It needs Bash 3.2+, Git, Swift's formatter, and SwiftLint; it does not
+require Node or jq. For an existing Git hook or Husky `.husky/pre-commit`, call:
+
+```sh
+bash "$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh"
+```
+
+The hook exits successfully without invoking format/lint tools when no Swift
+files are selected. Otherwise it checks **all** selected files before changing
+anything. A selected file with unstaged changes or a symlink blocks the commit.
+Finish staging the intended content, or separate those changes, then retry.
+The hook never automatically stashes work. With a root `.swift-format`, selected
+files are formatted and re-staged; without it, formatting is skipped. Both tools
+must be installed for Swift commits. SwiftLint warnings are allowed; errors and
+tool failures block. A later tool failure may leave already-formatted working
+files changed; the hook does not promise rollback for formatter/linter failures.
+
+Renames and filenames containing whitespace, newlines, or Git pathspec syntax
+are handled as individual literal paths. During a merge, the hook checks staged
+files that differ from every parent; this heuristic can include clean automatic
+merges and is not an exact detector of manual conflict resolutions.
+
+SwiftLint config precedence matches the Claude hooks below. A missing conventional
+`ci_scripts/.swiftlint.yml` parent fails before formatting. Submodule downloads
+are disabled by default; initialize the submodule yourself, or explicitly enable
+initialization with `CI_SCRIPTS_INIT_SUBMODULE=1`. Arbitrary YAML configuration is
+validated by SwiftLint. An explicit `DEVELOPER_DIR` is preserved; otherwise a
+Command Line Tools selection falls back to `/Applications/Xcode.app` when present.
+
+Run the synthetic hook tests with:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_hooks.py
+```
+
 ## Claude Code Lint Hooks
 
 Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that provide consistent swift-format and SwiftLint feedback across all projects using this submodule. The hooks live in `hooks/` and are referenced by each project's `.claude/settings.json`.
@@ -392,10 +430,16 @@ Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that 
 
 | Behavior | Detail |
 |----------|--------|
-| swift-format | Auto-formats staged `.swift` files in-place, re-stages them |
+| swift-format | Formats fully staged `.swift` files when `.swift-format` exists, then re-stages them |
+| Partial staging or symlinks | Blocks before any selected file is changed (exit 2) |
 | SwiftLint | Lints staged files — **blocks commit on errors** (exit 2) |
 | Missing tools | **Blocks commit** (exit 2) — both tools are required |
 | No staged Swift files | Skips silently |
+
+The pre-commit adapter delegates to the same core as the Git/Husky entry point.
+It retains the JSON stdin contract and exit-2 blocking behavior. Non-commit
+commands are ignored. Invalid JSON, missing jq, or a missing/invalid
+`CLAUDE_PROJECT_DIR` block with exit 2. The existing post-edit hook is unchanged.
 
 ### Hook Setup
 
