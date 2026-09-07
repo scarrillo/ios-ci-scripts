@@ -317,6 +317,33 @@ git push origin -f rel.v1.2.4    # Force-push triggers new Xcode Cloud build
 git push && git push origin rel.v1.0.1
 ```
 
+### bump-xcodegen-version.sh
+
+For XcodeGen projects, this separate helper updates `<app-dir>/project.yml`
+without committing, tagging, or performing any other Git operation:
+
+```sh
+./bump-xcodegen-version.sh /path/to/app [major|minor|patch] [--build] [--dry-run]
+```
+
+The default is a patch bump. `--build` also increments `CURRENT_PROJECT_VERSION`;
+`--dry-run` reports the proposed version without writing. The new marketing
+version is the only stdout output; diagnostics go to stderr and invalid input
+exits 2. Python 3 (standard library only) is required.
+
+This is a bounded line-oriented editor, not a general YAML parser. It accepts
+literal decimal `X.Y` or `X.Y.Z` marketing versions and integer build versions,
+plain or single/double quoted with optional trailing comments. Repeated
+declarations must agree. Updates preserve comments, newlines, and file mode,
+normalize decimal components, and replace the file atomically. Symlink inputs
+are rejected. The existing `bump-version.sh` interfaces remain unchanged.
+
+Run its synthetic tests with:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_xcodegen_versions.py
+```
+
 ### distribute.sh
 
 Builds a Release archive, exports an ad-hoc IPA, and uploads it to
