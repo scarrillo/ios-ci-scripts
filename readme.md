@@ -317,6 +317,33 @@ git push origin -f rel.v1.2.4    # Force-push triggers new Xcode Cloud build
 git push && git push origin rel.v1.0.1
 ```
 
+### bump-xcodegen-version.sh
+
+For XcodeGen projects, this separate helper updates `<app-dir>/project.yml`
+without committing, tagging, or performing any other Git operation:
+
+```sh
+./bump-xcodegen-version.sh /path/to/app [major|minor|patch] [--build] [--dry-run]
+```
+
+The default is a patch bump. `--build` also increments `CURRENT_PROJECT_VERSION`;
+`--dry-run` reports the proposed version without writing. The new marketing
+version is the only stdout output; diagnostics go to stderr and invalid input
+exits 2. Python 3 (standard library only) is required.
+
+This is a bounded line-oriented editor, not a general YAML parser. It accepts
+literal decimal `X.Y` or `X.Y.Z` marketing versions and integer build versions,
+plain or single/double quoted with optional trailing comments. Repeated
+declarations must agree. Updates preserve comments, newlines, and file mode,
+normalize decimal components, and replace the file atomically. Symlink inputs
+are rejected. The existing `bump-version.sh` interfaces remain unchanged.
+
+Run its synthetic tests with:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_xcodegen_versions.py
+```
+
 ### distribute.sh
 
 Builds a Release archive, exports an ad-hoc IPA, and uploads it to
@@ -371,6 +398,44 @@ Firebase project with the app's bundle ID registered as an iOS app, the
   blocked by the interactive-login check, but the signing half is the real
   work and has deliberately not been started.
 
+## Git and Husky Pre-commit Hook
+
+`hooks/pre-commit.sh` checks staged Swift files from plain Git, Husky, or a
+terminal. It needs Bash 3.2+, Git, Swift's formatter, and SwiftLint; it does not
+require Node or jq. For an existing Git hook or Husky `.husky/pre-commit`, call:
+
+```sh
+bash "$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh"
+```
+
+The hook exits successfully without invoking format/lint tools when no Swift
+files are selected. Otherwise it checks **all** selected files before changing
+anything. A selected file with unstaged changes or a symlink blocks the commit.
+Finish staging the intended content, or separate those changes, then retry.
+The hook never automatically stashes work. With a root `.swift-format`, selected
+files are formatted and re-staged; without it, formatting is skipped. Both tools
+must be installed for Swift commits. SwiftLint warnings are allowed; errors and
+tool failures block. A later tool failure may leave already-formatted working
+files changed; the hook does not promise rollback for formatter/linter failures.
+
+Renames and filenames containing whitespace, newlines, or Git pathspec syntax
+are handled as individual literal paths. During a merge, the hook checks staged
+files that differ from every parent; this heuristic can include clean automatic
+merges and is not an exact detector of manual conflict resolutions.
+
+SwiftLint config precedence matches the Claude hooks below. A missing conventional
+`ci_scripts/.swiftlint.yml` parent fails before formatting. Submodule downloads
+are disabled by default; initialize the submodule yourself, or explicitly enable
+initialization with `CI_SCRIPTS_INIT_SUBMODULE=1`. Arbitrary YAML configuration is
+validated by SwiftLint. An explicit `DEVELOPER_DIR` is preserved; otherwise a
+Command Line Tools selection falls back to `/Applications/Xcode.app` when present.
+
+Run the synthetic hook tests with:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_hooks.py
+```
+
 ## Claude Code Lint Hooks
 
 Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that provide consistent swift-format and SwiftLint feedback across all projects using this submodule. The hooks live in `hooks/` and are referenced by each project's `.claude/settings.json`.
@@ -392,10 +457,16 @@ Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that 
 
 | Behavior | Detail |
 |----------|--------|
-| swift-format | Auto-formats staged `.swift` files in-place, re-stages them |
+| swift-format | Formats fully staged `.swift` files when `.swift-format` exists, then re-stages them |
+| Partial staging or symlinks | Blocks before any selected file is changed (exit 2) |
 | SwiftLint | Lints staged files — **blocks commit on errors** (exit 2) |
 | Missing tools | **Blocks commit** (exit 2) — both tools are required |
 | No staged Swift files | Skips silently |
+
+The pre-commit adapter delegates to the same core as the Git/Husky entry point.
+It retains the JSON stdin contract and exit-2 blocking behavior. Non-commit
+commands are ignored. Invalid JSON, missing jq, or a missing/invalid
+`CLAUDE_PROJECT_DIR` block with exit 2. The existing post-edit hook is unchanged.
 
 ### Hook Setup
 
@@ -641,6 +712,8 @@ Workflow templates in `workflows/` that help automate Xcode Cloud builds. These 
 
 ### tag-on-merge.yml
 Add this GitHub Action to automatically create/update a git tag when a PR is merged to main. This runs `bump-version.sh tag -y` to tag the current `MARKETING_VERSION` and push it to the remote.
+
+The tag targets the PR's merged commit, even if `main` advances before the job runs.
 
 This will automatically trigger your Xcode Cloud workflow listening for tags prefixed with `rel.v*`. [Configure Xcode Cloud (Release Builds by tag)](#step-3-xcode-cloud-release-builds)
 
