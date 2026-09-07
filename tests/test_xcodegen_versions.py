@@ -87,12 +87,33 @@ class VersionTests(unittest.TestCase):
         for args in [('--unknown',), ('patch', 'minor'), ('extra',)]:
             self.assertEqual(self.run_bump(*args).returncode, 2)
 
-    def embedded_main(self):
+    def embedded_main(self, optimize=0):
         code = SCRIPT.read_text().split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
         code = code.rsplit('\ntry:\n    main()', 1)[0]
         namespace = {}
-        exec(compile(code, str(SCRIPT), 'exec'), namespace)
+        exec(compile(code, str(SCRIPT), 'exec', optimize=optimize), namespace)
         return namespace['main']
+
+    def test_render_validation_survives_optimization(self):
+        for optimize in (0, 1, 2):
+            for key in ('MARKETING_VERSION', 'CURRENT_PROJECT_VERSION'):
+                with self.subTest(optimize=optimize, key=key):
+                    main = self.embedded_main(optimize)
+                    original = main.__globals__['declarations']
+                    calls = {}
+                    def incorrect_render(text, name, marketing):
+                        entries = original(text, name, marketing)
+                        calls[name] = calls.get(name, 0) + 1
+                        if name == key and calls[name] == 2:
+                            return [(0, 1, (999, 0, 0) if marketing else (999,))]
+                        return entries
+                    before = self.yml.read_bytes()
+                    with mock.patch.dict(main.__globals__, declarations=incorrect_render), \
+                         mock.patch('sys.argv', [str(SCRIPT), str(self.root), '--build']), \
+                         mock.patch('tempfile.NamedTemporaryFile', side_effect=AssertionError('unexpected write')):
+                        with self.assertRaisesRegex(ValueError, 'rendered '+key):
+                            main()
+                    self.assertEqual(self.yml.read_bytes(), before)
 
     def test_write_failure_preserves_original(self):
         before = self.yml.read_bytes()

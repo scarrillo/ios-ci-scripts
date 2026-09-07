@@ -79,6 +79,17 @@ elif tool == 'swiftlint':
         return [row[1] for row in map(json.loads, self.log.read_text().splitlines())
                 if row[0] == tool] if self.log.exists() else []
 
+    def test_cleanup_failure_preserves_status(self):
+        self.env['BASH_FUNC_rm%%'] = '() { command rm "$@"; return 17; }'
+        result = self.hook()
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b'cleanup failed', result.stderr)
+        self.env['GIT_INDEX_FILE'] = str(self.repo / 'bad-index')
+        (self.repo / 'bad-index').write_bytes(b'not an index')
+        result = self.hook()
+        self.assertEqual(result.returncode, 128)
+        self.assertIn(b'cleanup failed', result.stderr)
+
     def test_no_swift_and_noncommit_skip_tools(self):
         self.assertEqual(self.hook().returncode, 0)
         self.stage('a.swift')

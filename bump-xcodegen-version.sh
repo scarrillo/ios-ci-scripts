@@ -95,9 +95,11 @@ def main():
     rendered = text
     for start, end, value in sorted(edits, reverse=True):
         rendered = rendered[:start]+value+rendered[end:]
-    assert declarations(rendered, 'MARKETING_VERSION', True)[0][2] == new
+    if declarations(rendered, 'MARKETING_VERSION', True)[0][2] != new:
+        raise ValueError('rendered MARKETING_VERSION does not match requested version')
     if build:
-        assert declarations(rendered, 'CURRENT_PROJECT_VERSION', False)[0][2] == (new_build,)
+        if declarations(rendered, 'CURRENT_PROJECT_VERSION', False)[0][2] != (new_build,):
+            raise ValueError('rendered CURRENT_PROJECT_VERSION does not match requested build')
     if not dry:
         temporary = None
         try:

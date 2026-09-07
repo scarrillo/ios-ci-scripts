@@ -5,7 +5,14 @@ staged_swift_main() (
     cd "$(git rev-parse --show-toplevel)"
     export PATH="$PATH:/opt/homebrew/bin"
     scratch=$(mktemp -d "${TMPDIR:-/tmp}/staged-swift.XXXXXX")
-    trap 'rm -rf "$scratch"' EXIT
+    # Invoked indirectly by the EXIT trap below.
+    # shellcheck disable=SC2329
+    cleanup_staged_swift() {
+        local status=$?
+        rm -rf "$scratch" || echo 'Warning: hook temporary-directory cleanup failed.' >&2
+        exit "$status"
+    }
+    trap cleanup_staged_swift EXIT
     git diff --cached --name-only -z --diff-filter=ACMR > "$scratch/selected"
     files=()
     merge_head=$(git rev-parse --git-path MERGE_HEAD)
