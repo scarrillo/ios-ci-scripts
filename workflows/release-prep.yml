@@ -1,0 +1,105 @@
+# Opt-in single-project example. Copy to .github/workflows/ on a trusted base.
+# Configure PROJECT_DIR and SCRIPTS_ROOT. Require strict branch freshness plus
+# release-prep status; compilation is separate. Hosted trial required before use.
+name: release-prep
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: write
+  statuses: write
+concurrency:
+  group: release-prep-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_DIR: Example
+      SCRIPTS_ROOT: ci_scripts/scripts/distribution
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    defaults:
+      run:
+        working-directory: candidate
+    steps:
+      # Trusted checkout pins the submodule too. Candidate code is data only.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: trusted
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+          path: candidate
+          fetch-depth: 0
+      - name: Prepare trusted Python environment
+        run: |
+          tools="$GITHUB_WORKSPACE/trusted/$SCRIPTS_ROOT"
+          for file in release_prep.py release_yaml.py release_version.py requirements-release.txt; do
+            test -f "$tools/$file"
+          done
+          venv="$(mktemp -d "$RUNNER_TEMP/release-python.XXXXXX")"
+          python3 -I -m venv "$venv"
+          "$venv/bin/python" -I -m pip --isolated install -r "$tools/requirements-release.txt"
+          echo "$venv/bin" >> "$GITHUB_PATH"
+          echo "RELEASE_TOOLS=$tools" >> "$GITHUB_ENV"
+          base_sha="$(git -C "$GITHUB_WORKSPACE/trusted" rev-parse HEAD)"
+          git fetch --no-tags origin "$base_sha"
+          echo "RELEASE_BASE_SHA=$base_sha" >> "$GITHUB_ENV"
+      - name: Validate and prepare
+        id: prep
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          if [ "$actual_sha" != "$HEAD_SHA" ]; then
+            echo "::error::Checkout SHA mismatch: expected $HEAD_SHA, got $actual_sha"
+            exit 1
+          fi
+          remote_ref="refs/pull/$PR_NUMBER/head"
+          readonly_args=(--read-only)
+          if [ "$SAME_REPO" = true ]; then
+            remote_ref="refs/heads/$HEAD_REF"
+            readonly_args=()
+          fi
+          python3 -I -B "$RELEASE_TOOLS/release_prep.py" remote-head --ref "$remote_ref" --expected "$HEAD_SHA"
+          decision="$(python3 -I -B "$RELEASE_TOOLS/release_prep.py" inspect \
+            --base "$RELEASE_BASE_SHA" --head "$HEAD_SHA" \
+            --project "$PROJECT_DIR/project.yml" --scope "$PROJECT_DIR" "${readonly_args[@]}")"
+          case "$decision" in
+            bump)
+              python3 -I -B "$RELEASE_TOOLS/release_version.py" "$PROJECT_DIR" patch --build
+              git --literal-pathspecs add -- "$PROJECT_DIR/project.yml"
+              git config user.name "release-prep[bot]"
+              git config user.email "release-prep[bot]@users.noreply.github.com"
+              git commit -m "chore: prepare release version"
+              python3 -I -B "$RELEASE_TOOLS/release_prep.py" remote-head --ref "$remote_ref" --expected "$HEAD_SHA"
+              git push origin "HEAD:refs/heads/$HEAD_REF"
+              ;;
+            skip|new|preserve) ;;
+            *) echo "::error::Unexpected release decision"; exit 1 ;;
+          esac
+          final_sha="$(git rev-parse HEAD)"
+          python3 -I -B "$RELEASE_TOOLS/release_prep.py" remote-head --ref "$remote_ref" --expected "$final_sha"
+          echo "sha=$final_sha" >> "$GITHUB_OUTPUT"
+          echo "ref=$remote_ref" >> "$GITHUB_OUTPUT"
+      - name: Report exact-head status
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.prep.outputs.sha || github.event.pull_request.head.sha }}
+          REMOTE_REF: ${{ steps.prep.outputs.ref }}
+          STATE: ${{ steps.prep.outcome == 'success' && 'success' || 'failure' }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$STATE" = success ]; then
+            if ! python3 -I -B "$RELEASE_TOOLS/release_prep.py" remote-head --ref "$REMOTE_REF" --expected "$SHA"; then
+              STATE=failure
+            fi
+          fi
+          gh api "repos/$REPOSITORY/statuses/$SHA" -f state="$STATE" \
+            -f context=release-prep -f description="Release metadata validation" -f target_url="$RUN_URL"

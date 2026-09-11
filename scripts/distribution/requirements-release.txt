@@ -1,0 +1,3 @@
+# Install from a trusted revision, never a PR checkout.
+--only-binary=:all:
+PyYAML==6.0.3

@@ -36,7 +36,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          ref: main
+          # Tag this PR's merged commit even if main advances before the job runs.
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           submodules: recursive
           fetch-depth: 0
 
