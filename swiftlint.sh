@@ -57,6 +57,12 @@ else
 fi
 
 if which swiftlint >/dev/null; then
+    # A binary that can't run (e.g. x86_64 without Rosetta) fails the build either
+    # way; name it instead of failing with a bare "Bad CPU type in executable".
+    if ! swiftlint version >/dev/null 2>&1; then
+        echo "error: SwiftLint Script: $(which swiftlint) can't run (built for another CPU architecture?)"
+        exit 1
+    fi
     # Use local config if it exists (inherits from ci_scripts), otherwise use base config
     echo "note: SwiftLint Script: Looking for: ${SWIFT_LINT_TARGET}/.swiftlint.local.yml"
     ls -la "${SWIFT_LINT_TARGET}"/.swiftlint* 2>/dev/null || echo "note: No .swiftlint* files found"

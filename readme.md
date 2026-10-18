@@ -214,8 +214,8 @@ Installs and runs SwiftLint for code linting.
 
 | Environment | Behavior |
 |-------------|----------|
-| CI | Installs SwiftLint via Homebrew, lints the repository |
-| Local | Uses existing SwiftLint installation, lints SRCROOT |
+| CI | Downloads a pinned, checksum-verified portable SwiftLint release, lints the repository |
+| Local | Uses the installed SwiftLint, with `/opt/homebrew/bin` first on `PATH`, lints SRCROOT. A `swiftlint` that can't run (for example an x86_64 build without Rosetta) fails the build with an `error:` naming it |
 
 **Configuration Files:**
 
