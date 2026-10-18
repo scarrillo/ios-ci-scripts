@@ -384,7 +384,7 @@ Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that 
 | Skips non-`.swift` files | Exits silently |
 | swift-format | Lint-only (no auto-fix) — warns on issues, doesn't block |
 | SwiftLint | Reports errors and warnings — doesn't block edits |
-| Missing tools | Warns but allows the edit to proceed |
+| Missing tools | Warns but allows the edit to proceed. A `swiftlint` that can't run (for example an x86_64 build without Rosetta) counts as missing, not as a pass |
 
 ### hooks/pre-commit-lint.sh
 
@@ -392,10 +392,10 @@ Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that 
 
 | Behavior | Detail |
 |----------|--------|
-| Partly staged files | **Blocks commit** (exit 2) when a staged `.swift` file also has unstaged changes, so re-staging can't commit them |
 | swift-format | Auto-formats staged `.swift` files in-place, re-stages them |
+| Partly staged files | A staged `.swift` file that also has unstaged changes is not auto-formatted (warning), because re-staging would commit those changes |
 | SwiftLint | Lints staged files — **blocks commit on errors** (exit 2) |
-| Missing tools | **Blocks commit** (exit 2) — both tools are required |
+| Missing tools | **Blocks commit** (exit 2) — both tools are required. A `swiftlint` that can't run counts as missing |
 | No staged Swift files | Skips silently |
 
 ### Hook Setup
@@ -442,6 +442,8 @@ A `matcher` matches the tool name only, so `Bash(git commit*)` never fires. The 
 | swift-format | Included with Xcode (Swift 5.9+) | Both hooks |
 | SwiftLint | `brew install swiftlint` | Both hooks |
 | jq | `brew install jq` | Both hooks (parses hook input) |
+
+On Apple Silicon, when `/opt/homebrew/bin` isn't on `PATH` (a session started outside a login shell), both hooks add it first, so an x86_64 tool in `/usr/local/bin` doesn't win. An existing `PATH` that lists it keeps its order. Elsewhere `PATH` is unchanged.
 
 ### Configuration Precedence
 

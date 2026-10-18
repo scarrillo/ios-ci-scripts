@@ -19,9 +19,15 @@ fi
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
 
 BASENAME=$(basename "$FILE_PATH")
-# Apple Silicon Homebrew first: a leftover Intel /usr/local/bin/swiftlint
-# fails with "Bad CPU type" without Rosetta. On Intel, /opt/homebrew is absent.
-export PATH="/opt/homebrew/bin:$PATH"
+# Sessions started outside a login shell may lack Apple Silicon Homebrew.
+# Add it first so an x86_64 binary in /usr/local/bin, which can't run
+# without Rosetta, doesn't win. A PATH that already lists it is kept as is.
+if [ -d /opt/homebrew/bin ]; then
+  case ":$PATH:" in
+    *:/opt/homebrew/bin:*) ;;
+    *) export PATH="/opt/homebrew/bin:$PATH" ;;
+  esac
+fi
 
 # Check tool availability (warn but don't block edits)
 HAS_SWIFT_FORMAT=true
@@ -34,6 +40,10 @@ HAS_SWIFTLINT=true
 if ! which swiftlint >/dev/null 2>&1; then
   HAS_SWIFTLINT=false
   echo "⚠ swiftlint not found — install with: brew install swiftlint"
+elif ! swiftlint version >/dev/null 2>&1; then
+  # Otherwise its output has no errors and the file would report a pass.
+  HAS_SWIFTLINT=false
+  echo "⚠ $(which swiftlint) can't run (built for another CPU architecture?)"
 fi
 
 # swift-format lint (single file)

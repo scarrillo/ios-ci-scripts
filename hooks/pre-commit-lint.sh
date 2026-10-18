@@ -19,9 +19,15 @@ command=$(echo "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
 # Only run for git commit commands
 if [[ "$command" == *"git commit"* ]] || [[ "$command" == *"git add"*"&&"*"git commit"* ]]; then
     cd "$CLAUDE_PROJECT_DIR"
-    # Apple Silicon Homebrew first: a leftover Intel /usr/local/bin/swiftlint
-    # fails with "Bad CPU type" without Rosetta. On Intel, /opt/homebrew is absent.
-    export PATH="/opt/homebrew/bin:$PATH"
+    # Sessions started outside a login shell may lack Apple Silicon Homebrew.
+    # Add it first so an x86_64 binary in /usr/local/bin, which can't run
+    # without Rosetta, doesn't win. A PATH that already lists it is kept as is.
+    if [ -d /opt/homebrew/bin ]; then
+        case ":$PATH:" in
+            *:/opt/homebrew/bin:*) ;;
+            *) export PATH="/opt/homebrew/bin:$PATH" ;;
+        esac
+    fi
 
     # Require both tools — block commit if missing
     MISSING_TOOLS=false
@@ -32,6 +38,9 @@ if [[ "$command" == *"git commit"* ]] || [[ "$command" == *"git add"*"&&"*"git c
     if ! which swiftlint >/dev/null 2>&1; then
         echo "ERROR: swiftlint not found — install with: brew install swiftlint" >&2
         MISSING_TOOLS=true
+    elif ! swiftlint version >/dev/null 2>&1; then
+        echo "ERROR: $(which swiftlint) can't run (built for another CPU architecture?)" >&2
+        MISSING_TOOLS=true
     fi
     if $MISSING_TOOLS; then
         echo "Commit blocked: required lint tools are missing." >&2
@@ -39,40 +48,28 @@ if [[ "$command" == *"git commit"* ]] || [[ "$command" == *"git add"*"&&"*"git c
     fi
 
     # Check if any Swift files are staged
-    staged_swift_files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.swift$' || true)
+    staged_swift_files=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACM | grep -E '\.swift$' || true)
 
     if [[ -z "$staged_swift_files" ]]; then
         echo "No Swift files staged, skipping lint." >&2
         exit 0
     fi
 
-    # Formatting re-stages whole files, which would commit unstaged changes too.
-    # Block when a staged Swift file also has unstaged changes.
-    partly_staged=$(echo "$staged_swift_files" | while IFS= read -r file; do
-        if ! git diff --quiet -- "$file"; then
-            echo "$file"
-        fi
-    done)
-    if [[ -n "$partly_staged" ]]; then
-        echo "Commit blocked: these staged Swift files also have unstaged changes:" >&2
-        echo "$partly_staged" >&2
-        echo "Stage or stash the rest of each file, then commit again." >&2
-        exit 2
-    fi
-
-    # Run swift-format on staged files (auto-fix in place, then re-stage)
+    # Run swift-format on staged files (auto-fix in place, then re-stage).
+    # Re-staging adds the whole file, so a file that also has unstaged changes
+    # is left unformatted: re-staging it would commit those changes too.
     if [ -f ".swift-format" ]; then
         echo "Running swift-format on staged files..." >&2
         echo "$staged_swift_files" | while IFS= read -r file; do
-            if [ -f "$file" ]; then
-                swift format format --configuration .swift-format --in-place "$file" 2>&1
+            if [ ! -f "$file" ]; then
+                continue
             fi
-        done
-        # Re-stage any formatted files
-        echo "$staged_swift_files" | while IFS= read -r file; do
-            if [ -f "$file" ]; then
-                git add "$file"
+            if ! git diff --no-ext-diff --no-textconv --quiet -- ":(literal)$file"; then
+                echo "warning: $file has unstaged changes, so it was not auto-formatted." >&2
+                continue
             fi
+            swift format format --configuration .swift-format --in-place "$file" 2>&1
+            git add -- ":(literal)$file"
         done
     fi
 
@@ -88,13 +85,13 @@ if [[ "$command" == *"git commit"* ]] || [[ "$command" == *"git add"*"&&"*"git c
     fi
 
     # Re-read staged files (may have changed after formatting)
-    staged_swift_files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.swift$' || true)
+    staged_swift_files=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACM | grep -E '\.swift$' || true)
 
     if [[ -n "$staged_swift_files" ]]; then
         if [ -n "$LINT_CONFIG" ]; then
-            LINT_OUTPUT=$(echo "$staged_swift_files" | xargs swiftlint lint --config "$LINT_CONFIG" 2>&1)
+            LINT_OUTPUT=$(echo "$staged_swift_files" | tr '\n' '\0' | xargs -0 swiftlint lint --config "$LINT_CONFIG" 2>&1)
         else
-            LINT_OUTPUT=$(echo "$staged_swift_files" | xargs swiftlint lint 2>&1)
+            LINT_OUTPUT=$(echo "$staged_swift_files" | tr '\n' '\0' | xargs -0 swiftlint lint 2>&1)
         fi
         LINT_EXIT=$?
 
