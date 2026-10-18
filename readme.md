@@ -388,10 +388,11 @@ Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that 
 
 ### hooks/pre-commit-lint.sh
 
-**PreToolUse** hook for `Bash(git commit*)`. Runs before Claude commits, acting as a final formatting and lint gate.
+**PreToolUse** hook for `Bash`. Runs before every Bash call and acts only on `git commit` commands, as a final formatting and lint gate.
 
 | Behavior | Detail |
 |----------|--------|
+| Partly staged files | **Blocks commit** (exit 2) when a staged `.swift` file also has unstaged changes, so re-staging can't commit them |
 | swift-format | Auto-formats staged `.swift` files in-place, re-stages them |
 | SwiftLint | Lints staged files — **blocks commit on errors** (exit 2) |
 | Missing tools | **Blocks commit** (exit 2) — both tools are required |
@@ -417,7 +418,7 @@ Add the following to your project's `.claude/settings.json`:
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash(git commit*)",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
@@ -429,6 +430,8 @@ Add the following to your project's `.claude/settings.json`:
   }
 }
 ```
+
+A `matcher` matches the tool name only, so `Bash(git commit*)` never fires. The script filters for `git commit` itself, which also catches chained commands like `git add x && git commit`.
 
 `$CLAUDE_PROJECT_DIR` is set automatically by Claude Code to the project root, so the paths resolve correctly regardless of where Claude invokes the hook from.
 

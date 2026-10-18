@@ -19,7 +19,9 @@ fi
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
 
 BASENAME=$(basename "$FILE_PATH")
-export PATH="$PATH:/opt/homebrew/bin"
+# Apple Silicon Homebrew first: a leftover Intel /usr/local/bin/swiftlint
+# fails with "Bad CPU type" without Rosetta. On Intel, /opt/homebrew is absent.
+export PATH="/opt/homebrew/bin:$PATH"
 
 # Check tool availability (warn but don't block edits)
 HAS_SWIFT_FORMAT=true

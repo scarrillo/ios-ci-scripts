@@ -19,7 +19,9 @@ command=$(echo "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
 # Only run for git commit commands
 if [[ "$command" == *"git commit"* ]] || [[ "$command" == *"git add"*"&&"*"git commit"* ]]; then
     cd "$CLAUDE_PROJECT_DIR"
-    export PATH="$PATH:/opt/homebrew/bin"
+    # Apple Silicon Homebrew first: a leftover Intel /usr/local/bin/swiftlint
+    # fails with "Bad CPU type" without Rosetta. On Intel, /opt/homebrew is absent.
+    export PATH="/opt/homebrew/bin:$PATH"
 
     # Require both tools — block commit if missing
     MISSING_TOOLS=false
@@ -42,6 +44,20 @@ if [[ "$command" == *"git commit"* ]] || [[ "$command" == *"git add"*"&&"*"git c
     if [[ -z "$staged_swift_files" ]]; then
         echo "No Swift files staged, skipping lint." >&2
         exit 0
+    fi
+
+    # Formatting re-stages whole files, which would commit unstaged changes too.
+    # Block when a staged Swift file also has unstaged changes.
+    partly_staged=$(echo "$staged_swift_files" | while IFS= read -r file; do
+        if ! git diff --quiet -- "$file"; then
+            echo "$file"
+        fi
+    done)
+    if [[ -n "$partly_staged" ]]; then
+        echo "Commit blocked: these staged Swift files also have unstaged changes:" >&2
+        echo "$partly_staged" >&2
+        echo "Stage or stash the rest of each file, then commit again." >&2
+        exit 2
     fi
 
     # Run swift-format on staged files (auto-fix in place, then re-stage)
