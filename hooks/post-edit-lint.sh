@@ -16,7 +16,9 @@ if [[ "$FILE_PATH" != *.swift ]]; then
   exit 0
 fi
 
-cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
+# Use the configs of the edited file's repository (a worktree or submodule has its own)
+FILE_REPO=$(git -C "$(dirname "$FILE_PATH")" rev-parse --show-toplevel 2>/dev/null)
+cd "${FILE_REPO:-${CLAUDE_PROJECT_DIR:-.}}" || exit 0
 
 BASENAME=$(basename "$FILE_PATH")
 # Sessions started outside a login shell may lack Apple Silicon Homebrew.

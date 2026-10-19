@@ -377,7 +377,7 @@ Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that 
 
 ### hooks/post-edit-lint.sh
 
-**PostToolUse** hook for `Edit|Write`. Runs after Claude edits or creates a Swift file, giving immediate lint feedback per file.
+**PostToolUse** hook for `Edit|Write`. Runs after Claude edits or creates a Swift file, giving immediate lint feedback per file, using the configs of the repository that holds the file.
 
 | Behavior | Detail |
 |----------|--------|
@@ -388,13 +388,16 @@ Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that 
 
 ### hooks/pre-commit-lint.sh
 
-**PreToolUse** hook for `Bash`. Runs before every Bash call and acts only on `git commit` commands, as a final formatting and lint gate.
+**PreToolUse** hook for `Bash`. Runs before every Bash call and acts only on an actual `git commit`, as a final formatting and lint gate. It reads the command's words, honoring quotes, so `rg 'git commit'` or a commit message that mentions `git add` doesn't trigger it, while `a && git commit`, `$(git commit)`, and `git -C dir commit` do.
 
 | Behavior | Detail |
 |----------|--------|
 | swift-format | Auto-formats staged `.swift` files in-place, re-stages them |
-| Partly staged files | A staged `.swift` file that also has unstaged changes is not auto-formatted (warning), because re-staging would commit those changes |
+| Partly staged files | A staged `.swift` file that also has unstaged changes is not auto-formatted (warning), because re-staging would commit those changes. Its staged content is linted, not the working copy |
 | SwiftLint | Lints staged files — **blocks commit on errors** (exit 2) |
+| Staging in the same call | **Blocks commit** (exit 2) when `git add`, `git rm`, or another index-changing git command runs in the same Bash call as `git commit`. The hook runs before the whole call, so it can't see what gets staged. Stage first, then commit as its own call |
+| Unstaged content | **Blocks commit** (exit 2) for `git commit -a`, `-i`, `-o`, or with paths, which commit changes the hook can't check beforehand |
+| Repository | The one the commit runs in: the hook input's `cwd`, followed through `cd` and `git -C`, so a worktree or submodule is checked against its own index and configs |
 | Missing tools | **Blocks commit** (exit 2) — both tools are required. A `swiftlint` that can't run counts as missing |
 | No staged Swift files | Skips silently |
 
@@ -431,7 +434,9 @@ Add the following to your project's `.claude/settings.json`:
 }
 ```
 
-A `matcher` matches the tool name only, so `Bash(git commit*)` never fires. The script filters for `git commit` itself, which also catches chained commands like `git add x && git commit`.
+A `matcher` matches the tool name only, so `Bash(git commit*)` never fires. Use `"matcher": "Bash"`; the script finds `git commit` itself. A handler-level `"if": "Bash(git commit *)"` is not needed, and would skip forms such as `git -C dir commit`.
+
+Limits: heredoc bodies before the commit are read as commands, and partly staged files are linted from standard input, which doesn't apply the config's `excluded` paths. For a gate that sees exactly what git commits, also install a git `pre-commit` hook.
 
 `$CLAUDE_PROJECT_DIR` is set automatically by Claude Code to the project root, so the paths resolve correctly regardless of where Claude invokes the hook from.
 
