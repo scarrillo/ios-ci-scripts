@@ -399,6 +399,7 @@ This check is best effort: it runs before the shell does and predicts what the c
 | SwiftLint | Lints staged files — **blocks commit on errors** (exit 2) |
 | Staging in the same call | **Blocks commit** (exit 2) when a git command not known to leave the index alone (for example `git add`, `git rm`, `git cherry-pick -n`) runs in the same Bash call as `git commit`. The hook runs before the whole call, so it can't see what gets staged. Stage first, then commit as its own call. Read-only commands such as `git status` or `git diff` are allowed |
 | Another repository or index | **Blocks commit** (exit 2) when `--git-dir`, `--work-tree`, `GIT_DIR`, `GIT_WORK_TREE`, or `GIT_INDEX_FILE` is set in the command |
+| Forms it can't follow | **Blocks commit** (exit 2) when one Bash call runs `git commit` more than once, or runs it under a wrapper with options (`env -u X git commit`, `sudo -u me git commit`) |
 | Unstaged content | **Blocks commit** (exit 2) for `git commit -a`, `-i`, `-o`, or with paths, which commit changes the hook can't check beforehand |
 | Repository | The one the commit runs in: the hook input's `cwd`, followed through `cd` and `git -C` (a `cd` inside a subshell ends with it), so a worktree or submodule is checked against its own index and configs |
 | Missing tools | **Blocks commit** (exit 2) — both tools are required. A `swiftlint` that can't run counts as missing |
@@ -439,7 +440,7 @@ Add the following to your project's `.claude/settings.json`:
 
 A `matcher` matches the tool name only, so `Bash(git commit*)` never fires. Use `"matcher": "Bash"`; the script finds `git commit` itself. A handler-level `"if": "Bash(git commit *)"` is not needed, and would skip forms such as `git -C dir commit`.
 
-Limits: aliases, `eval`, `sh -c`, and scripts that stage files aren't followed; heredoc bodies before the commit are read as commands; and partly staged files are linted from standard input, which doesn't apply the config's `excluded` paths. For a gate that sees exactly what git commits, also install a git `pre-commit` hook.
+Limits: aliases, `eval`, `sh -c`, and scripts that stage files aren't followed; heredoc bodies are skipped, so a `$(…)` inside an unquoted heredoc isn't followed; and partly staged files are linted from standard input, which doesn't apply the config's `excluded` paths. For a gate that sees exactly what git commits, also install a git `pre-commit` hook.
 
 `$CLAUDE_PROJECT_DIR` is set automatically by Claude Code to the project root, so the paths resolve correctly regardless of where Claude invokes the hook from.
 

@@ -22,12 +22,33 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 # $(...), backticks, and ( ) are scanned as commands too, even inside double
 # quotes, between "\002(" and "\002)" lines that mark their scope. So
 # `a && git commit` and `x="$(git commit)"` are seen while text such as
-# `rg 'git commit'` is not. Heredoc bodies aren't recognized and read as commands.
+# `rg 'git commit'` is not. Heredoc bodies are skipped. A word that starts
+# quoted or escaped is prefixed with \003, so '>file' isn't a redirection.
 split_commands() {
     printf '%s' "$1" | awk '
         function end_word() {
-            if (in_word) { part = part (part == "" ? "" : "\037") word }
+            if (in_word) {
+                part = part (part == "" ? "" : "\037") word
+                if (want_delim) {
+                    delim = word; sub(/^\003/, "", delim)
+                    heredocs++; heredoc_delim[heredocs] = delim; heredoc_tabs[heredocs] = want_tabs
+                    want_delim = 0
+                }
+            }
             word = ""; in_word = 0
+        }
+        function start_word() { if (!in_word) { word = "\003"; in_word = 1 } }
+        function skip_heredoc_bodies(   k, rest, nl, body_line) {
+            for (k = 1; k <= heredocs; k++) {
+                while (i < n) {
+                    rest = substr($0, i + 1); nl = index(rest, "\n")
+                    body_line = nl ? substr(rest, 1, nl - 1) : rest
+                    i += nl ? nl : length(rest)
+                    if (heredoc_tabs[k]) { sub(/^\t+/, "", body_line) }
+                    if (body_line == heredoc_delim[k]) { break }
+                }
+            }
+            heredocs = 0
         }
         function end_part() { end_word(); if (part != "") { print part }; part = "" }
         function open_subst(kind) {
@@ -55,15 +76,15 @@ split_commands() {
                     continue
                 }
                 if (c == "\047") {
-                    in_word = 1
+                    start_word()
                     j = index(substr($0, i + 1), "\047")
                     if (j == 0) { text = substr($0, i + 1); i = n } else { text = substr($0, i + 1, j - 1); i += j }
                     gsub(/\n/, " ", text); word = word text
                 } else if (c == "\\" && i < n) {
                     i++; c = substr($0, i, 1)
-                    if (c != "\n") { word = word c; in_word = 1 }
+                    if (c != "\n") { start_word(); word = word c }
                 } else if (c == "\"") {
-                    quote = c; in_word = 1
+                    quote = c; start_word()
                 } else if (c == "$" && next_c == "(") {
                     i++; in_word = 1; open_subst("$(")
                 } else if (c == "`") {
@@ -79,10 +100,15 @@ split_commands() {
                     if (in_word && (last == ">" || last == "<")) { word = word c }  # >& and <&
                     else if (next_c == ">") { end_word(); word = c; in_word = 1 }  # &>
                     else { end_part() }
+                } else if (c == "<" && next_c == "<" && substr($0, i + 2, 1) != "<") {
+                    end_word(); i++; word = "<<"; in_word = 1; want_tabs = 0
+                    if (substr($0, i + 1, 1) == "-") { i++; word = word "-"; want_tabs = 1 }
+                    end_word(); want_delim = 1
                 } else if (c == " " || c == "\t") {
                     end_word()
                 } else if (c == ";" || c == "|" || c == "\n") {
                     end_part()
+                    if (c == "\n" && heredocs > 0) { skip_heredoc_bodies() }
                 } else {
                     word = word c; in_word = 1
                 }
@@ -100,7 +126,7 @@ redirect_kind() {
         *) return 1 ;;
     esac
     case "$1" in
-        *'>' | *'<' | *'&' | *'>|') REDIRECT=operator ;;
+        *'>' | *'<' | *'&' | *'>|' | *'<<-') REDIRECT=operator ;;
         *) REDIRECT=attached ;;
     esac
 }
@@ -126,10 +152,14 @@ commit_takes_unstaged() {
             takes_value=false
             continue
         fi
-        if redirect_kind "$word"; then
-            [ "$REDIRECT" = operator ] && takes_value=true
-            continue
-        fi
+        case "$word" in
+            $'\003'*) word=${word#$'\003'} ;;
+            *)
+                if redirect_kind "$word"; then
+                    [ "$REDIRECT" = operator ] && takes_value=true
+                    continue
+                fi ;;
+        esac
         case "$word" in
             --) return 0 ;;
             --all | --include | --only | --interactive | --patch | --pathspec-from-file*) return 0 ;;
@@ -154,16 +184,31 @@ commit_takes_unstaged() {
     return 1
 }
 
+# Is there a `git ... commit` in words $1 onward?
+words_have_git_commit() {
+    local j=$1 seen_git=false
+    while [ $j -lt ${#words[@]} ]; do
+        case "${words[$j]}" in
+            git | */git) seen_git=true ;;
+            commit) $seen_git && return 0 ;;
+        esac
+        j=$((j + 1))
+    done
+    return 1
+}
+
 # Read the commands in order. Follow `cd` and `git -C` to the repository the
 # commit runs in, restoring the directory when a subshell ends. Note any git
 # command before the commit that isn't known to leave the index alone, and any
-# setting that points git at another repository or index.
+# form the hook can't follow, so the commit is blocked rather than unchecked.
 repo_dir="${hook_cwd:-$CLAUDE_PROJECT_DIR}"
 dir_stack=()
-is_commit=false
+commit_count=0
+commit_dir=""
+commit_args=()
 index_changed_by=""
 repo_override=""
-commit_args=()
+wrapper_options=""
 while IFS= read -r line; do
     case "$line" in
         $'\002(')
@@ -178,11 +223,21 @@ while IFS= read -r line; do
             continue ;;
     esac
     IFS=$'\037' read -r -a words <<< "$line"
-    # Skip variable assignments, redirections, and command wrappers
+    # Strip the quoted-word marker, remembering which words had it
+    quoted=()
+    k=0
+    while [ $k -lt ${#words[@]} ]; do
+        case "${words[$k]}" in
+            $'\003'*) quoted[$k]=true; words[$k]=${words[$k]#$'\003'} ;;
+            *) quoted[$k]=false ;;
+        esac
+        k=$((k + 1))
+    done
+    # Skip variable assignments, redirections, shell keywords, and command wrappers
     i=0
     while [ $i -lt ${#words[@]} ]; do
         word=${words[$i]}
-        if redirect_kind "$word"; then
+        if ! ${quoted[$i]} && redirect_kind "$word"; then
             [ "$REDIRECT" = operator ] && i=$((i + 1))
             i=$((i + 1))
             continue
@@ -191,7 +246,17 @@ while IFS= read -r line; do
             GIT_DIR=* | GIT_WORK_TREE=* | GIT_INDEX_FILE=*)
                 repo_override=${word%%=*}
                 i=$((i + 1)) ;;
-            [A-Za-z_]*=* | env | command | builtin | exec | nohup | time | sudo | '!' | '{') i=$((i + 1)) ;;
+            env | command | builtin | exec | nohup | time | sudo)
+                # A wrapper's options can take operands; don't guess past them
+                if [ "${words[$((i + 1))]:0:1}" = - ]; then
+                    if words_have_git_commit $((i + 1)); then
+                        commit_count=$((commit_count + 1))
+                        wrapper_options=$word
+                    fi
+                    continue 2
+                fi
+                i=$((i + 1)) ;;
+            [A-Za-z_]*=* | if | then | else | elif | do | while | until | '!' | '{') i=$((i + 1)) ;;
             *) break ;;
         esac
     done
@@ -214,7 +279,7 @@ while IFS= read -r line; do
     git_dir=$repo_dir
     while [ $i -lt ${#words[@]} ]; do
         word=${words[$i]}
-        if redirect_kind "$word"; then
+        if ! ${quoted[$i]} && redirect_kind "$word"; then
             [ "$REDIRECT" = operator ] && i=$((i + 1))
             i=$((i + 1))
             continue
@@ -236,23 +301,46 @@ while IFS= read -r line; do
     done
     case "${words[$i]}" in
         commit)
-            is_commit=true
-            repo_dir=$git_dir
-            commit_args=("${words[@]:$((i + 1))}")
-            break ;;
+            commit_count=$((commit_count + 1))
+            if [ $commit_count = 1 ]; then
+                commit_dir=$git_dir
+                commit_args=()
+                k=$((i + 1))
+                while [ $k -lt ${#words[@]} ]; do
+                    if ${quoted[$k]}; then
+                        commit_args+=($'\003'"${words[$k]}")
+                    else
+                        commit_args+=("${words[$k]}")
+                    fi
+                    k=$((k + 1))
+                done
+            fi ;;
         # Known to leave the index alone
         "" | status | diff | log | show | rev-parse | rev-list | ls-files | ls-tree | cat-file | describe | \
             blame | grep | shortlog | show-ref | for-each-ref | symbolic-ref | merge-base | name-rev | \
             check-ignore | check-attr | fetch | remote | push | branch | tag | config | version | help | var) ;;
-        *) index_changed_by="git ${words[$i]}" ;;
+        *)
+            if [ $commit_count = 0 ]; then
+                index_changed_by="git ${words[$i]}"
+            fi ;;
     esac
 done < <(split_commands "$command")
 
 # Allow all other commands
-if ! $is_commit; then
+if [ $commit_count = 0 ]; then
     exit 0
 fi
 
+if [ -n "$wrapper_options" ]; then
+    echo "Commit blocked: git commit runs under $wrapper_options with options, which this hook can't follow." >&2
+    echo "Run git commit directly, without the $wrapper_options options." >&2
+    exit 2
+fi
+if [ $commit_count -gt 1 ]; then
+    echo "Commit blocked: this command runs git commit $commit_count times, and this hook can only check what is staged before the first." >&2
+    echo "Run each git commit as its own command." >&2
+    exit 2
+fi
 if [ -n "$repo_override" ]; then
     echo "Commit blocked: $repo_override points git at a repository or index this hook can't follow." >&2
     echo "Run git commit from inside the repository, without $repo_override." >&2
@@ -270,7 +358,7 @@ if commit_takes_unstaged "${commit_args[@]}"; then
 fi
 
 # Check the repository the commit runs in (a worktree or submodule has its own)
-cd "$repo_dir" 2>/dev/null || exit 0
+cd "$commit_dir" 2>/dev/null || exit 0
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$repo_root" || exit 0
 
