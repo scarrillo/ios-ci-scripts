@@ -18,8 +18,10 @@ command=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/nul
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 
 # Print each simple command on its own line, words separated by \037.
-# Quotes and backslashes are honored, and ; & | ( ) and newlines end a command,
-# so `a && git commit` and `$(git commit)` are both seen while text such as
+# Quotes and backslashes are honored, and ; & | and newlines end a command.
+# $(...), backticks, and ( ) are scanned as commands too, even inside double
+# quotes, between "\002(" and "\002)" lines that mark their scope. So
+# `a && git commit` and `x="$(git commit)"` are seen while text such as
 # `rg 'git commit'` is not. Heredoc bodies aren't recognized and read as commands.
 split_commands() {
     printf '%s' "$1" | awk '
@@ -28,26 +30,58 @@ split_commands() {
             word = ""; in_word = 0
         }
         function end_part() { end_word(); if (part != "") { print part }; part = "" }
-        BEGIN { RS = "\001" }
+        function open_subst(kind) {
+            d++; saved_part[d] = part; saved_word[d] = word; saved_quote[d] = quote; kind_at[d] = kind
+            part = ""; word = ""; in_word = 0; quote = ""
+            print "\002("
+        }
+        function close_subst() {
+            end_part(); print "\002)"
+            part = saved_part[d]; word = saved_word[d]; quote = saved_quote[d]; in_word = 1; d--
+        }
+        function open_group() { end_part(); d++; kind_at[d] = "("; print "\002(" }
+        function close_group() { end_part(); print "\002)"; d-- }
+        BEGIN { RS = "\001"; d = 0 }
         {
             n = length($0)
             for (i = 1; i <= n; i++) {
-                c = substr($0, i, 1)
-                if (c == "\n" && quote != "") { c = " " }
-                if (quote == "\047") {
-                    if (c == "\047") { quote = "" } else { word = word c }
-                } else if (quote == "\"") {
+                c = substr($0, i, 1); next_c = substr($0, i + 1, 1)
+                if (quote == "\"") {
                     if (c == "\\" && i < n) { i++; word = word substr($0, i, 1) }
                     else if (c == "\"") { quote = "" }
-                    else { word = word c }
+                    else if (c == "$" && next_c == "(") { i++; open_subst("$(") }
+                    else if (c == "`") { open_subst("`") }
+                    else { word = word (c == "\n" ? " " : c) }
+                    continue
+                }
+                if (c == "\047") {
+                    in_word = 1
+                    j = index(substr($0, i + 1), "\047")
+                    if (j == 0) { text = substr($0, i + 1); i = n } else { text = substr($0, i + 1, j - 1); i += j }
+                    gsub(/\n/, " ", text); word = word text
                 } else if (c == "\\" && i < n) {
                     i++; c = substr($0, i, 1)
                     if (c != "\n") { word = word c; in_word = 1 }
-                } else if (c == "\047" || c == "\"") {
+                } else if (c == "\"") {
                     quote = c; in_word = 1
+                } else if (c == "$" && next_c == "(") {
+                    i++; in_word = 1; open_subst("$(")
+                } else if (c == "`") {
+                    if (d > 0 && kind_at[d] == "`") { close_subst() } else { in_word = 1; open_subst("`") }
+                } else if (c == "(") {
+                    open_group()
+                } else if (c == ")") {
+                    if (d > 0 && kind_at[d] == "$(") { close_subst() }
+                    else if (d > 0 && kind_at[d] == "(") { close_group() }
+                    else { end_part() }
+                } else if (c == "&") {
+                    last = substr(word, length(word), 1)
+                    if (in_word && (last == ">" || last == "<")) { word = word c }  # >& and <&
+                    else if (next_c == ">") { end_word(); word = c; in_word = 1 }  # &>
+                    else { end_part() }
                 } else if (c == " " || c == "\t") {
                     end_word()
-                } else if (index(";&|()\n", c)) {
+                } else if (c == ";" || c == "|" || c == "\n") {
                     end_part()
                 } else {
                     word = word c; in_word = 1
@@ -55,6 +89,20 @@ split_commands() {
             }
             end_part()
         }'
+}
+
+# Is $1 a redirection? Sets REDIRECT to "operator" when its target is the
+# next word, or "attached" when the target is in the same word.
+redirect_kind() {
+    REDIRECT=""
+    case "$1" in
+        '>'* | '<'* | '&>'* | [0-9]'>'* | [0-9]'<'*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *'>' | *'<' | *'&' | *'>|') REDIRECT=operator ;;
+        *) REDIRECT=attached ;;
+    esac
 }
 
 # Print directory $2 resolved against $1, or $1 when $2 doesn't exist
@@ -78,8 +126,11 @@ commit_takes_unstaged() {
             takes_value=false
             continue
         fi
+        if redirect_kind "$word"; then
+            [ "$REDIRECT" = operator ] && takes_value=true
+            continue
+        fi
         case "$word" in
-            '<'* | '>'* | [0-9]'<'* | [0-9]'>'*) return 1 ;;  # redirection: no more arguments
             --) return 0 ;;
             --all | --include | --only | --interactive | --patch | --pathspec-from-file*) return 0 ;;
             --message | --file | --reuse-message | --reedit-message | --template | --author | --date | --cleanup | --fixup | --squash | --trailer)
@@ -104,17 +155,42 @@ commit_takes_unstaged() {
 }
 
 # Read the commands in order. Follow `cd` and `git -C` to the repository the
-# commit runs in, and note a git command that changes the index before it.
+# commit runs in, restoring the directory when a subshell ends. Note any git
+# command before the commit that isn't known to leave the index alone, and any
+# setting that points git at another repository or index.
 repo_dir="${hook_cwd:-$CLAUDE_PROJECT_DIR}"
+dir_stack=()
 is_commit=false
 index_changed_by=""
+repo_override=""
 commit_args=()
 while IFS= read -r line; do
+    case "$line" in
+        $'\002(')
+            dir_stack+=("$repo_dir")
+            continue ;;
+        $'\002)')
+            if [ ${#dir_stack[@]} -gt 0 ]; then
+                last=$((${#dir_stack[@]} - 1))
+                repo_dir=${dir_stack[$last]}
+                unset "dir_stack[$last]"
+            fi
+            continue ;;
+    esac
     IFS=$'\037' read -r -a words <<< "$line"
-    # Skip variable assignments and command wrappers
+    # Skip variable assignments, redirections, and command wrappers
     i=0
     while [ $i -lt ${#words[@]} ]; do
-        case "${words[$i]}" in
+        word=${words[$i]}
+        if redirect_kind "$word"; then
+            [ "$REDIRECT" = operator ] && i=$((i + 1))
+            i=$((i + 1))
+            continue
+        fi
+        case "$word" in
+            GIT_DIR=* | GIT_WORK_TREE=* | GIT_INDEX_FILE=*)
+                repo_override=${word%%=*}
+                i=$((i + 1)) ;;
             [A-Za-z_]*=* | env | command | builtin | exec | nohup | time | sudo | '!' | '{') i=$((i + 1)) ;;
             *) break ;;
         esac
@@ -123,6 +199,13 @@ while IFS= read -r line; do
         cd)
             repo_dir=$(resolve_dir "$repo_dir" "${words[$((i + 1))]:-$HOME}")
             continue ;;
+        export | declare | typeset)
+            for word in "${words[@]:$((i + 1))}"; do
+                case "$word" in
+                    GIT_DIR=* | GIT_WORK_TREE=* | GIT_INDEX_FILE=*) repo_override=${word%%=*} ;;
+                esac
+            done
+            continue ;;
         git | */git) ;;
         *) continue ;;
     esac
@@ -130,11 +213,23 @@ while IFS= read -r line; do
     i=$((i + 1))
     git_dir=$repo_dir
     while [ $i -lt ${#words[@]} ]; do
-        case "${words[$i]}" in
+        word=${words[$i]}
+        if redirect_kind "$word"; then
+            [ "$REDIRECT" = operator ] && i=$((i + 1))
+            i=$((i + 1))
+            continue
+        fi
+        case "$word" in
             -C)
                 git_dir=$(resolve_dir "$git_dir" "${words[$((i + 1))]}")
                 i=$((i + 2)) ;;
-            -c | --git-dir | --work-tree | --namespace | --config-env) i=$((i + 2)) ;;
+            --git-dir | --work-tree)
+                repo_override=$word
+                i=$((i + 2)) ;;
+            --git-dir=* | --work-tree=*)
+                repo_override=${word%%=*}
+                i=$((i + 1)) ;;
+            -c | --namespace | --config-env) i=$((i + 2)) ;;
             -*) i=$((i + 1)) ;;
             *) break ;;
         esac
@@ -145,8 +240,11 @@ while IFS= read -r line; do
             repo_dir=$git_dir
             commit_args=("${words[@]:$((i + 1))}")
             break ;;
-        add | stage | rm | mv | reset | restore | checkout | stash | apply | update-index)
-            index_changed_by="git ${words[$i]}" ;;
+        # Known to leave the index alone
+        "" | status | diff | log | show | rev-parse | rev-list | ls-files | ls-tree | cat-file | describe | \
+            blame | grep | shortlog | show-ref | for-each-ref | symbolic-ref | merge-base | name-rev | \
+            check-ignore | check-attr | fetch | remote | push | branch | tag | config | version | help | var) ;;
+        *) index_changed_by="git ${words[$i]}" ;;
     esac
 done < <(split_commands "$command")
 
@@ -155,6 +253,11 @@ if ! $is_commit; then
     exit 0
 fi
 
+if [ -n "$repo_override" ]; then
+    echo "Commit blocked: $repo_override points git at a repository or index this hook can't follow." >&2
+    echo "Run git commit from inside the repository, without $repo_override." >&2
+    exit 2
+fi
 if [ -n "$index_changed_by" ]; then
     echo "Commit blocked: $index_changed_by runs in the same command as git commit, and this hook runs before both, so it can't check what gets staged." >&2
     echo "Run $index_changed_by first, then git commit as its own command." >&2
