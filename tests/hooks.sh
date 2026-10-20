@@ -227,6 +227,57 @@ OUT=$(jq -n --arg c "git commit -m t" --arg d "$T" '{tool_input: {command: $c}, 
 CODE=$?
 expect "swiftlint that can't run blocks with a clear message" 2 "can't run"
 
+
+echo "== Claude hook: pipelines, comments, functions, wrappers, options"
+mkrepo "$T"
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+mkrepo "$O"
+printf "$CLEAN" > "$O/Clean.swift"
+git -C "$O" add Clean.swift
+pre "$O" "cd $T | cat; git commit -m t";                  expect "cd in a pipeline doesn't leak" 0 "SwiftLint passed"
+pre "$O" "git status | cd $T; git commit -m t";           expect "cd at the end of a pipeline doesn't leak" 0 "SwiftLint passed"
+pre "$O" "cd $T || true; git commit -m t";                expect "cd before || still applies" 2 "force_cast"
+pre "$O" "git status |& cat; git commit -m t";            expect "|& pipeline" 0 "SwiftLint passed"
+pre "$O" "cd $T # stay here; cd /tmp
+git commit -m t";                                          expect "comment text isn't run" 2 "force_cast"
+pre "$O" "git commit -m t # -a";                          expect "flag in a comment is ignored" 0 "SwiftLint passed"
+pre "$O" "echo a#b; git commit -m t";                     expect "# inside a word isn't a comment" 0 "SwiftLint passed"
+pre "$T" "function do_commit { git commit -m x; }; do_commit"; expect "commit inside a function keyword definition" 2 "force_cast"
+pre "$T" "do_commit() { git commit -m x; }; do_commit";   expect "commit inside a name() definition" 2 "force_cast"
+pre "$T" "/usr/bin/env git commit -m x";                  expect "path-qualified env" 2 "force_cast"
+pre "$T" "/usr/bin/env -i git commit -m x";               expect "path-qualified env with options" 2 "env with options"
+pre "$T" "timeout 60 git commit -m x";                    expect "timeout takes arguments" 2 "timeout with options"
+pre "$T" "printf x | xargs git commit -m";                expect "xargs runs commands it reads" 2 "xargs with options"
+pre "$O" "git commit --pathspec-from-fi=paths -m x";      expect "abbreviated --pathspec-from-file" 2 "aren't staged"
+pre "$O" "git commit --al -m x";                          expect "abbreviated --all" 2 "aren't staged"
+pre "$O" "git commit --mess 'two words'";                 expect "abbreviated --message takes a value" 0 "SwiftLint passed"
+pre "$O" "git commit --untracked-files=no -m x";          expect "--untracked-files=no" 0 "SwiftLint passed"
+pre "$O" "git commit -uno -m t";                          expect "-uno is -u no, not -o" 0 "SwiftLint passed"
+pre "$O" "git commit -Skey -m t";                         expect "-S with an attached key" 0 "SwiftLint passed"
+
+echo "== Shared checks: format failures, symlinked working copies, unusual names"
+mkrepo "$T"
+printf '{ this is not json\n' > "$T/.swift-format"
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift
+pre "$T" "git commit -m t";                                expect "malformed .swift-format blocks" 2 "swift-format couldn't format"
+mkrepo "$T"
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+printf "$CLEAN" > "$WORK/outside/Clean.swift"
+rm "$T/Bad.swift"
+ln -s "$WORK/outside/Clean.swift" "$T/Bad.swift"
+pre "$T" "git commit -m t";                                expect "staged file with a symlinked working copy is linted" 2 "Bad.swift (staged)"
+mkrepo "$T"
+for f in "$(printf 'Tab\tName.swift')" 'Quote"Name.swift' 'Back\slash.swift' "$(printf 'New\nLine.swift')"; do
+    printf "$LINT_ERROR" > "$T/$f"
+    git -C "$T" add -- ":(literal)$f"
+done
+pre "$T" "git commit -m t"
+count=$(printf '%s' "$OUT" | grep -c 'force_cast')
+check "tab, quote, backslash, and newline names are linted ($count)" "$(yes_if [ "$count" -ge 4 ])"
+
 echo "== git pre-commit hook"
 mkrepo "$T"
 ln -s "$H/pre-commit.sh" "$T/.git/hooks/pre-commit"

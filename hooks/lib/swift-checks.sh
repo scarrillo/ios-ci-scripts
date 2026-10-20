@@ -79,16 +79,20 @@ swift_checks_tools() {
     return $usable
 }
 
-# Print the staged Swift files to check, one per line: added, copied,
-# modified, or renamed. Skips symlinks, and during a merge, files whose staged
-# content matches a merge parent (brought in unchanged by the merge; a
+# Print the staged Swift files to check, each ending in NUL: added, copied,
+# modified, or renamed. Skips staged symlinks, and during a merge, files whose
+# staged content matches a merge parent (brought in unchanged by the merge; a
 # heuristic, not a detector for hand-resolved conflicts).
 swift_checks_staged_files() {
     local file parent merge_head inherited
     merge_head=$(git rev-parse --git-path MERGE_HEAD 2>/dev/null)
-    git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR | grep -E '\.swift$' |
-        while IFS= read -r file; do
-            if [ -L "$file" ] || git ls-files -s -- ":(literal)$file" | grep -q '^120000 '; then
+    git diff --cached --name-only -z --diff-filter=ACMR |
+        while IFS= read -r -d '' file; do
+            case "$file" in
+                *.swift) ;;
+                *) continue ;;
+            esac
+            if git ls-files -s -- ":(literal)$file" | grep -q '^120000 '; then
                 echo "warning: $file is a symlink, so it was not formatted or linted." >&2
                 continue
             fi
@@ -104,7 +108,7 @@ swift_checks_staged_files() {
                     continue
                 fi
             fi
-            printf '%s\n' "$file"
+            printf '%s\0' "$file"
         done
 }
 
@@ -116,7 +120,8 @@ swift_checks_partly_staged() {
 # Format and lint the staged Swift files of the repository in the current
 # directory. Returns 1 when the commit should be blocked.
 swift_checks_staged() {
-    local file output parent staged_swift_files full_files="" partial_files="" lint_failed=false lint_output=""
+    local file output parent lint_failed=false lint_output=""
+    local staged_files=() full_files=() partial_files=()
 
     swift_checks_path
     swift_checks_toolchain
@@ -125,8 +130,10 @@ swift_checks_staged() {
         return 1
     fi
 
-    staged_swift_files=$(swift_checks_staged_files)
-    if [[ -z "$staged_swift_files" ]]; then
+    while IFS= read -r -d '' file; do
+        staged_files+=("$file")
+    done < <(swift_checks_staged_files)
+    if [ ${#staged_files[@]} -eq 0 ]; then
         echo "No Swift files staged, skipping lint." >&2
         return 0
     fi
@@ -142,7 +149,7 @@ swift_checks_staged() {
     # is left unformatted: re-staging it would commit those changes too.
     if [ -f ".swift-format" ]; then
         echo "Running swift-format on staged files..." >&2
-        while IFS= read -r file; do
+        for file in "${staged_files[@]}"; do
             if [ ! -f "$file" ]; then
                 continue
             fi
@@ -150,39 +157,40 @@ swift_checks_staged() {
                 echo "warning: $file has unstaged changes, so it was not auto-formatted." >&2
                 continue
             fi
-            swift format format --configuration .swift-format --in-place -- "$file" >&2 2>&1
+            if ! output=$(swift format format --configuration .swift-format --in-place -- "$file" 2>&1); then
+                printf '%s\n' "$output" >&2
+                echo "Commit blocked: swift-format couldn't format $file." >&2
+                return 1
+            fi
+            if [ -n "$output" ]; then
+                printf '%s\n' "$output" >&2
+            fi
             git add -- ":(literal)$file"
-        done <<< "$staged_swift_files"
+        done
     fi
 
     # Run SwiftLint on staged files only (warnings allowed, errors block)
     echo "Running SwiftLint on staged files..." >&2
     swift_checks_lint_args
 
-    while IFS= read -r file; do
-        if [ -z "$file" ]; then
-            continue
-        fi
+    for file in "${staged_files[@]}"; do
         if swift_checks_partly_staged "$file"; then
-            partial_files+="$file"$'\n'
+            partial_files+=("$file")
         else
-            full_files+="$file"$'\n'
+            full_files+=("$file")
         fi
-    done <<< "$staged_swift_files"
+    done
 
-    if [ -n "$full_files" ]; then
-        output=$(printf '%s' "$full_files" | tr '\n' '\0' | xargs -0 swiftlint lint "${LINT_ARGS[@]}" -- 2>&1) || lint_failed=true
+    if [ ${#full_files[@]} -gt 0 ]; then
+        output=$(swiftlint lint "${LINT_ARGS[@]}" -- "${full_files[@]}" 2>&1) || lint_failed=true
         lint_output+="$output"$'\n'
     fi
     # Lint what gets committed: the staged content, not the working copy.
     # Standard input doesn't apply the config's `excluded` paths.
-    while IFS= read -r file; do
-        if [ -z "$file" ]; then
-            continue
-        fi
-        output=$(git show ":$file" | swiftlint lint --use-stdin "${LINT_ARGS[@]}" 2>&1) || lint_failed=true
+    for file in "${partial_files[@]}"; do
+        output=$(git cat-file blob ":$file" | swiftlint lint --use-stdin "${LINT_ARGS[@]}" 2>&1) || lint_failed=true
         lint_output+="${output//<nopath>/$file (staged)}"$'\n'
-    done <<< "$partial_files"
+    done
 
     if $lint_failed; then
         echo "$lint_output" >&2

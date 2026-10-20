@@ -48,8 +48,9 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 # $(...), backticks, and ( ) are scanned as commands too, even inside double
 # quotes, between "\002(" and "\002)" lines that mark their scope. So
 # `a && git commit` and `x="$(git commit)"` are seen while text such as
-# `rg 'git commit'` is not. Heredoc bodies are skipped. A word that starts
-# quoted or escaped is prefixed with \003, so '>file' isn't a redirection.
+# `rg 'git commit'` is not. Each part of a pipeline is scoped like a subshell.
+# Heredoc bodies and comments are skipped. A word that starts quoted or
+# escaped is prefixed with \003, so '>file' isn't a redirection.
 split_commands() {
     printf '%s' "$1" | awk '
         function end_word() {
@@ -76,15 +77,21 @@ split_commands() {
             }
             heredocs = 0
         }
-        function end_part() { end_word(); if (part != "") { print part }; part = "" }
+        function end_part() {
+            end_word()
+            if (part != "") {
+                if (piped) { print "\002("; print part; print "\002)" } else { print part }
+            }
+            part = ""; piped = 0
+        }
         function open_subst(kind) {
-            d++; saved_part[d] = part; saved_word[d] = word; saved_quote[d] = quote; kind_at[d] = kind
-            part = ""; word = ""; in_word = 0; quote = ""
+            d++; saved_part[d] = part; saved_word[d] = word; saved_quote[d] = quote; saved_piped[d] = piped; kind_at[d] = kind
+            part = ""; word = ""; in_word = 0; quote = ""; piped = 0
             print "\002("
         }
         function close_subst() {
             end_part(); print "\002)"
-            part = saved_part[d]; word = saved_word[d]; quote = saved_quote[d]; in_word = 1; d--
+            part = saved_part[d]; word = saved_word[d]; quote = saved_quote[d]; piped = saved_piped[d]; in_word = 1; d--
         }
         function open_group() { end_part(); d++; kind_at[d] = "("; print "\002(" }
         function close_group() { end_part(); print "\002)"; d-- }
@@ -130,9 +137,17 @@ split_commands() {
                     end_word(); i++; word = "<<"; in_word = 1; want_tabs = 0
                     if (substr($0, i + 1, 1) == "-") { i++; word = word "-"; want_tabs = 1 }
                     end_word(); want_delim = 1
+                } else if (c == "#" && !in_word) {
+                    j = index(substr($0, i + 1), "\n")
+                    i = j ? i + j - 1 : n  # to the end of the line
+                } else if (c == "|" && next_c == "|") {
+                    i++; end_part()
+                } else if (c == "|") {
+                    if (next_c == "&") { i++ }
+                    piped = 1; end_part(); piped = 1  # both sides of a pipe run in subshells
                 } else if (c == " " || c == "\t") {
                     end_word()
-                } else if (c == ";" || c == "|" || c == "\n") {
+                } else if (c == ";" || c == "\n") {
                     end_part()
                     if (c == "\n" && heredocs > 0) { skip_heredoc_bodies() }
                 } else {
@@ -172,7 +187,7 @@ resolve_dir() {
 # Does this git commit take changes that aren't staged yet (-a, -i, -o, or
 # paths)? The hook runs before the command, so it can only check the index.
 commit_takes_unstaged() {
-    local word opt rest takes_value=false
+    local word opt rest name long takes_value=false
     for word in "$@"; do
         if $takes_value; then
             takes_value=false
@@ -188,10 +203,23 @@ commit_takes_unstaged() {
         esac
         case "$word" in
             --) return 0 ;;
-            --all | --include | --only | --interactive | --patch | --pathspec-from-file*) return 0 ;;
-            --message | --file | --reuse-message | --reedit-message | --template | --author | --date | --cleanup | --fixup | --squash | --trailer)
-                takes_value=true ;;
-            --*) ;;
+            --*)
+                # Git accepts any unambiguous prefix of a long option
+                name=${word%%=*}
+                for long in --all --include --only --interactive --patch --pathspec-from-file; do
+                    case "$long" in
+                        "$name"*) return 0 ;;
+                    esac
+                done
+                if [ "$name" = "$word" ]; then
+                    for long in --message --file --reuse-message --reedit-message --template --author --date --cleanup --fixup --squash --trailer; do
+                        case "$long" in
+                            "$name"*)
+                                takes_value=true
+                                break ;;
+                        esac
+                    done
+                fi ;;
             -*)
                 rest=${word#-}
                 while [ -n "$rest" ]; do
@@ -199,6 +227,7 @@ commit_takes_unstaged() {
                     rest=${rest:1}
                     case "$opt" in
                         a | i | o | p) return 0 ;;
+                        u | S) break ;;  # the rest is their optional value (-uno)
                         m | F | C | c | t)
                             [ -z "$rest" ] && takes_value=true
                             break ;;
@@ -272,16 +301,23 @@ while IFS= read -r line; do
             GIT_DIR=* | GIT_WORK_TREE=* | GIT_INDEX_FILE=*)
                 repo_override=${word%%=*}
                 i=$((i + 1)) ;;
-            env | command | builtin | exec | nohup | time | sudo)
-                # A wrapper's options can take operands; don't guess past them
-                if [ "${words[$((i + 1))]:0:1}" = - ]; then
+            env | */env | command | builtin | exec | nohup | */nohup | time | */time | sudo | */sudo | \
+                nice | */nice | timeout | */timeout | xargs | */xargs | caffeinate | */caffeinate)
+                # A wrapper's options can take operands; don't guess past them. The
+                # last four always take arguments or read their commands elsewhere.
+                case "${word##*/}" in
+                    nice | timeout | xargs | caffeinate) opaque=true ;;
+                    *) [ "${words[$((i + 1))]:0:1}" = - ] && opaque=true || opaque=false ;;
+                esac
+                if $opaque; then
                     if words_have_git_commit $((i + 1)); then
                         commit_count=$((commit_count + 1))
-                        wrapper_options=$word
+                        wrapper_options=${word##*/}
                     fi
                     continue 2
                 fi
                 i=$((i + 1)) ;;
+            function) i=$((i + 2)) ;;  # function name { ...; }
             [A-Za-z_]*=* | if | then | else | elif | do | while | until | '!' | '{') i=$((i + 1)) ;;
             *) break ;;
         esac
@@ -358,8 +394,8 @@ if [ $commit_count = 0 ]; then
 fi
 
 if [ -n "$wrapper_options" ]; then
-    echo "Commit blocked: git commit runs under $wrapper_options with options, which this hook can't follow." >&2
-    echo "Run git commit directly, without the $wrapper_options options." >&2
+    echo "Commit blocked: git commit runs under $wrapper_options with options or arguments this hook can't follow." >&2
+    echo "Run git commit directly, without $wrapper_options." >&2
     exit 2
 fi
 if [ $commit_count -gt 1 ]; then

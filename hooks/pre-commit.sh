@@ -6,9 +6,10 @@
 # every commit and every client. Shares its checks with the Claude Code hook
 # (pre-commit-lint.sh) through lib/swift-checks.sh.
 #
-# Install from the project root:
-#   ln -sf "$PWD/ci_scripts/hooks/pre-commit.sh" "$(git rev-parse --git-path hooks)/pre-commit"
-# or call it from another hook manager (for example .husky/pre-commit).
+# Install from the project root, when no pre-commit hook exists yet:
+#   ln -s "$PWD/ci_scripts/hooks/pre-commit.sh" "$(git rev-parse --git-path hooks)/pre-commit"
+# From an existing hook or another hook manager (for example .husky/pre-commit):
+#   "$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" || exit 1
 #
 # Exit code 0 = allow commit, Exit code 1 = block commit
 #

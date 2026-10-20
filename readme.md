@@ -411,13 +411,19 @@ Limits: aliases, `eval`, `sh -c`, and scripts that stage files aren't followed, 
 
 ### hooks/pre-commit.sh
 
-A git `pre-commit` hook running the [Commit checks](#commit-checks). Git runs it after staging, for every commit from any client, so it sees exactly what gets committed, including `git commit -a`. A failure blocks the commit (exit 1). Install it from the project root:
+A git `pre-commit` hook running the [Commit checks](#commit-checks). Git runs it after staging, for every commit from any client, so it sees exactly what gets committed, including `git commit -a`. A failure blocks the commit (exit 1). Install it from the project root; an existing hook is left in place:
 
 ```bash
-ln -sf "$PWD/ci_scripts/hooks/pre-commit.sh" "$(git rev-parse --git-path hooks)/pre-commit"
+hook="$(git rev-parse --git-path hooks)/pre-commit"
+if [ -e "$hook" ] || [ -L "$hook" ]; then
+    echo "$hook already exists. Add this line to it instead:"
+    echo '"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" || exit 1'
+else
+    ln -s "$PWD/ci_scripts/hooks/pre-commit.sh" "$hook"
+fi
 ```
 
-Or call `ci_scripts/hooks/pre-commit.sh` from another hook manager, for example `.husky/pre-commit`. With both installed, a commit from Claude is checked twice; formatting is idempotent.
+From an existing hook or another hook manager (for example `.husky/pre-commit`), call `"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" || exit 1`. With both this and the Claude Code hook installed, a commit from Claude is checked twice; formatting is idempotent.
 
 ### Commit checks
 
@@ -425,11 +431,12 @@ Or call `ci_scripts/hooks/pre-commit.sh` from another hook manager, for example 
 
 | Behavior | Detail |
 |----------|--------|
-| Files | Added, copied, modified, and renamed `.swift` files |
+| Files | Added, copied, modified, and renamed `.swift` files, read null-separated so any file name works |
 | swift-format | Auto-formats staged files in place and re-stages them |
 | Partly staged files | A staged file that also has unstaged changes is not auto-formatted (warning), because re-staging would commit those changes. Its staged content is linted, not the working copy |
 | SwiftLint | Lints staged files — **blocks the commit on errors** |
-| Symlinks | Skipped with a warning, so formatting can't write through a link |
+| Symlinks | A staged symlink is skipped with a warning, so formatting can't write through a link. A staged regular file whose working copy is now a symlink is checked like a partly staged file |
+| swift-format failure | **Blocks the commit** when swift-format can't format a file, for example with a malformed `.swift-format` |
 | Merges | During a merge, a file whose staged content matches a merge parent (brought in unchanged) is skipped. A heuristic, not a detector for hand-resolved conflicts |
 | Missing parent config | **Blocks the commit** when `.swiftlint.local.yml` inherits from a file that is missing, because SwiftLint would only warn and lint without the parent's rules |
 | Missing tools | **Blocks the commit** — both tools are required. A `swiftlint` that can't run counts as missing |
