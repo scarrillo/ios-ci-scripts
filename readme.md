@@ -407,7 +407,7 @@ This check is best effort: it runs before the shell does and predicts what the c
 | Repository | The one the commit runs in: the hook input's `cwd`, followed through `cd` and `git -C` (a `cd` inside a subshell ends with it), so a worktree or submodule is checked against its own index and configs |
 | jq missing | **Blocks commit** (exit 2) when the input looks like a commit, since the command can't be read; other commands pass |
 
-Limits: aliases, `eval`, `sh -c`, and scripts that stage files aren't followed, and a `$(…)` inside an unquoted heredoc isn't followed.
+Limits: aliases, `eval`, `sh -c`, and scripts that stage files aren't followed; a `$(…)` inside an unquoted heredoc isn't followed; and quoting is tracked per word, so a redirection character quoted partway through a word (`2\>file`) is read as a redirection.
 
 ### hooks/pre-commit.sh
 

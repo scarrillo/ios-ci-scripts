@@ -239,6 +239,8 @@ pre "$O" "cd $T | cat; git commit -m t";                  expect "cd in a pipeli
 pre "$O" "git status | cd $T; git commit -m t";           expect "cd at the end of a pipeline doesn't leak" 0 "SwiftLint passed"
 pre "$O" "cd $T || true; git commit -m t";                expect "cd before || still applies" 2 "force_cast"
 pre "$O" "git status |& cat; git commit -m t";            expect "|& pipeline" 0 "SwiftLint passed"
+pre "$O" "cd $T & wait; git commit -m t";                 expect "cd in a background command doesn't leak" 0 "SwiftLint passed"
+pre "$O" "sleep 0 & cd $T && git commit -m t";            expect "cd after a background command applies" 2 "force_cast"
 pre "$O" "cd $T # stay here; cd /tmp
 git commit -m t";                                          expect "comment text isn't run" 2 "force_cast"
 pre "$O" "git commit -m t # -a";                          expect "flag in a comment is ignored" 0 "SwiftLint passed"

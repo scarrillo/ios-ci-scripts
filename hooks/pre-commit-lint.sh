@@ -48,7 +48,8 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 # $(...), backticks, and ( ) are scanned as commands too, even inside double
 # quotes, between "\002(" and "\002)" lines that mark their scope. So
 # `a && git commit` and `x="$(git commit)"` are seen while text such as
-# `rg 'git commit'` is not. Each part of a pipeline is scoped like a subshell.
+# `rg 'git commit'` is not. Each part of a pipeline, and a background command,
+# is scoped like a subshell.
 # Heredoc bodies and comments are skipped. A word that starts quoted or
 # escaped is prefixed with \003, so '>file' isn't a redirection.
 split_commands() {
@@ -132,7 +133,8 @@ split_commands() {
                     last = substr(word, length(word), 1)
                     if (in_word && (last == ">" || last == "<")) { word = word c }  # >& and <&
                     else if (next_c == ">") { end_word(); word = c; in_word = 1 }  # &>
-                    else { end_part() }
+                    else if (next_c == "&") { i++; end_part() }  # &&
+                    else { piped = 1; end_part() }  # a background command runs in a subshell
                 } else if (c == "<" && next_c == "<" && substr($0, i + 2, 1) != "<") {
                     end_word(); i++; word = "<<"; in_word = 1; want_tabs = 0
                     if (substr($0, i + 1, 1) == "-") { i++; word = word "-"; want_tabs = 1 }
