@@ -4,7 +4,8 @@
 #
 # This Claude Code hook intercepts git commit commands and runs formatting
 # and linting as a safety net. The PostToolUse hook (post-edit-lint.sh)
-# catches most issues per-edit; this is the final gate.
+# catches most issues per-edit; this is the final gate. The checks are shared
+# with pre-commit.sh, the git hook, through lib/swift-checks.sh.
 #
 # Shared via ci_scripts submodule. Project-specific exclusions belong in
 # .swiftlint.local.yml (SwiftLint) or .swift-format (swift-format).
@@ -12,8 +13,33 @@
 # Exit code 0 = allow commit, Exit code 2 = block commit
 #
 
+# Find this script's directory, following symlinks
+source_path=${BASH_SOURCE[0]}
+while [ -L "$source_path" ]; do
+    link_dir=$(cd -P "$(dirname "$source_path")" && pwd)
+    source_path=$(readlink "$source_path")
+    case "$source_path" in
+        /*) ;;
+        *) source_path="$link_dir/$source_path" ;;
+    esac
+done
+hook_dir=$(cd -P "$(dirname "$source_path")" && pwd)
+# shellcheck source=lib/swift-checks.sh
+source "$hook_dir/lib/swift-checks.sh"
+swift_checks_path
+
 # Read the tool input from stdin
 input=$(cat)
+# Without jq the command can't be read. Block what looks like a commit, so
+# the check isn't skipped silently, and let everything else through.
+if ! command -v jq >/dev/null 2>&1; then
+    case "$input" in
+        *git*commit*)
+            echo "Commit blocked: jq is required to check commits — install with: brew install jq" >&2
+            exit 2 ;;
+    esac
+    exit 0
+fi
 command=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 
@@ -362,112 +388,17 @@ cd "$commit_dir" 2>/dev/null || exit 0
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$repo_root" || exit 0
 
-# Sessions started outside a login shell may lack Apple Silicon Homebrew.
-# Add it first so an x86_64 binary in /usr/local/bin, which can't run
-# without Rosetta, doesn't win. A PATH that already lists it is kept as is.
-if [ -d /opt/homebrew/bin ]; then
-    case ":$PATH:" in
-        *:/opt/homebrew/bin:*) ;;
-        *) export PATH="/opt/homebrew/bin:$PATH" ;;
-    esac
-fi
-
-# Require both tools — block commit if missing
-MISSING_TOOLS=false
-if ! swift format --version >/dev/null 2>&1; then
-    echo "ERROR: swift-format not available — requires Xcode toolchain (Swift 5.9+)" >&2
-    MISSING_TOOLS=true
-fi
-if ! which swiftlint >/dev/null 2>&1; then
-    echo "ERROR: swiftlint not found — install with: brew install swiftlint" >&2
-    MISSING_TOOLS=true
-elif ! swiftlint version >/dev/null 2>&1; then
-    echo "ERROR: $(which swiftlint) can't run (built for another CPU architecture?)" >&2
-    MISSING_TOOLS=true
-fi
-if $MISSING_TOOLS; then
-    echo "Commit blocked: required lint tools are missing." >&2
-    exit 2
-fi
-
-# Check if any Swift files are staged
-staged_swift_files=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACM | grep -E '\.swift$' || true)
-
-if [[ -z "$staged_swift_files" ]]; then
-    echo "No Swift files staged, skipping lint." >&2
-    exit 0
-fi
-
-# A staged file that also has unstaged changes: its working copy isn't what gets committed
-is_partly_staged() {
-    ! git diff --no-ext-diff --no-textconv --quiet -- ":(literal)$1"
-}
-
-# Run swift-format on staged files (auto-fix in place, then re-stage).
-# Re-staging adds the whole file, so a file that also has unstaged changes
-# is left unformatted: re-staging it would commit those changes too.
-if [ -f ".swift-format" ]; then
-    echo "Running swift-format on staged files..." >&2
-    echo "$staged_swift_files" | while IFS= read -r file; do
-        if [ ! -f "$file" ]; then
-            continue
-        fi
-        if is_partly_staged "$file"; then
-            echo "warning: $file has unstaged changes, so it was not auto-formatted." >&2
-            continue
-        fi
-        swift format format --configuration .swift-format --in-place "$file" 2>&1
-        git add -- ":(literal)$file"
-    done
-fi
-
-# Run SwiftLint on staged files only (warnings allowed, errors block)
-echo "Running SwiftLint on staged files..." >&2
-
-if [ -f ".swiftlint.local.yml" ]; then
-    LINT_ARGS=(--config .swiftlint.local.yml)
-elif [ -f "ci_scripts/.swiftlint.yml" ]; then
-    LINT_ARGS=(--config ci_scripts/.swiftlint.yml)
-else
-    LINT_ARGS=()
-fi
-
-# Re-read staged files (may have changed after formatting)
-staged_swift_files=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACM | grep -E '\.swift$' || true)
-
-full_files=""
-partial_files=""
-while IFS= read -r file; do
-    if [ -z "$file" ]; then
-        continue
-    fi
-    if is_partly_staged "$file"; then
-        partial_files+="$file"$'\n'
-    else
-        full_files+="$file"$'\n'
-    fi
-done <<< "$staged_swift_files"
-
-LINT_OUTPUT=""
-LINT_FAILED=false
-if [ -n "$full_files" ]; then
-    output=$(printf '%s' "$full_files" | tr '\n' '\0' | xargs -0 swiftlint lint "${LINT_ARGS[@]}" 2>&1) || LINT_FAILED=true
-    LINT_OUTPUT+="$output"$'\n'
-fi
-# Lint what gets committed: the staged content, not the working copy.
-# Standard input doesn't apply the config's `excluded` paths.
-while IFS= read -r file; do
-    if [ -z "$file" ]; then
-        continue
-    fi
-    output=$(git show ":$file" | swiftlint lint --use-stdin "${LINT_ARGS[@]}" 2>&1) || LINT_FAILED=true
-    LINT_OUTPUT+="${output//<nopath>/$file (staged)}"$'\n'
-done <<< "$partial_files"
-
-if $LINT_FAILED; then
-    echo "$LINT_OUTPUT" >&2
-    echo "SwiftLint found errors. Please fix before committing." >&2
+messages=$(swift_checks_staged 2>&1)
+status=$?
+if [ $status -ne 0 ]; then
+    printf '%s\n' "$messages" >&2
     exit 2  # Block the commit
 fi
-echo "SwiftLint passed." >&2
+printf '%s\n' "$messages" >&2
+# Claude only sees a passing hook's output as JSON, so send the warnings that way
+warnings=$(printf '%s\n' "$messages" | grep '^warning: ' || true)
+if [ -n "$warnings" ]; then
+    jq -n --arg context "pre-commit-lint: $warnings" \
+        '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $context}}'
+fi
 exit 0
