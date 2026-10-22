@@ -404,12 +404,12 @@ This check is best effort: it runs before the shell does and predicts what the c
 | Unstaged content | **Blocks commit** (exit 2) for `git commit -a`, `-i`, `-o`, or with paths, which commit changes the hook can't check beforehand |
 | Another repository or index | **Blocks commit** (exit 2) when `--git-dir`, `--work-tree`, `GIT_DIR`, `GIT_WORK_TREE`, or `GIT_INDEX_FILE` is set in the command |
 | Forms it can't follow | **Blocks commit** (exit 2) when one Bash call runs `git commit` more than once, or runs it under a wrapper with options (`env -u X git commit`, `sudo -u me git commit`) |
-| Repository | The one the commit runs in: the hook input's `cwd`, followed through `cd`, `pushd`, and `git -C` (a `cd` inside a subshell ends with it), so a worktree or submodule is checked against its own index and configs |
+| Repository | The one the commit runs in: the hook input's `cwd`, followed through `cd` (including `-P`), `pushd`, and `git -C`, which follows symlinks (a `cd` inside a subshell ends with it), so a worktree or submodule is checked against its own index and configs |
 | Directory it can't tell | **Blocks commit** (exit 2) when the directory comes from something the text doesn't show: a `cd` or `pushd` to a variable or substitution, `-`, `+N`, `~user`, zsh's `cd old new`, `popd`, or a directory that doesn't exist yet. `cd` to a literal path works |
-| Command it can't tell | **Blocks commit** (exit 2) when a later word is `commit` and the command name comes from a variable, substitution, `$'…'` escape, or zsh's `=git`; or when `eval`, `alias`, `source`, or `sh`/`bash`/`zsh -c` is given a string containing `commit` |
+| Command it can't tell | **Blocks commit** (exit 2) when the command contains the word `commit` (quotes removed) and a command name comes from a variable, substitution, `$'…'` escape, or zsh's `=git`, also under wrappers; or when `eval`, `alias`, `source`, or `sh`/`bash`/`zsh -c` is given a string that contains `commit` or a value the text doesn't show. A shell running a script (`bash script.sh`) isn't affected. An argument the text doesn't show counts as possible unstaged content (`$'--\x61ll'`), while option values such as `-m "$msg"` are fine |
 | jq missing | **Blocks commit** (exit 2) when the input looks like a commit, since the command can't be read; other commands pass |
 
-Limits: scripts that run or stage a commit (`./release.sh`) aren't followed; a `$(…)` inside an unquoted heredoc isn't followed; and quoting is tracked per word, so a redirection character quoted partway through a word (`2\>file`) is read as a redirection.
+Limits: scripts that run or stage a commit (`./release.sh`) aren't followed; `commit` spelled with escapes (`$'\x63ommit'`) isn't recognized; a `$(…)` inside an unquoted heredoc isn't followed; and quoting is tracked per word, so a redirection character quoted partway through a word (`2\>file`) is read as a redirection.
 
 ### hooks/pre-commit.sh
 

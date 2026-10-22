@@ -322,6 +322,42 @@ pre "$O" "sh -c 'echo commit-msg'";                       expect "commit-msg isn
 pre "$O" "git merge --no-commit x";                       expect "--no-commit isn't commit" 0
 pre "$O" "bash script.sh";                                expect "bash running a script" 0
 
+
+echo "== Claude hook: review fixes for unresolved forms"
+mkrepo "$T"
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+mkdir -p "$T/sub"
+mkrepo "$O"
+printf "$CLEAN" > "$O/Clean.swift"
+git -C "$O" add Clean.swift
+pre "$O" "cat <<\$EOF
+body
+\$EOF
+git commit -a -m x";                                      expect "heredoc delimiter with \$ (commit after it is seen)" 2 "aren't staged"
+pre "$T" "cat << \"\$END\"
+body
+\$END
+git commit -m x";                                         expect "quoted heredoc delimiter with \$" 2 "force_cast"
+pre "$O" "bash script.sh --message 'initial commit'";     expect "bash running a script with commit in its arguments" 0
+pre "$T" "bash -lc 'git commit -m x'";                    expect "bash -lc" 2 "through bash -c"
+pre "$T" "sh -c 'git com\"\"mit -a -m x'";                expect "sh -c with a quote-split commit" 2 "through sh -c"
+pre "$T" "eval 'git com\"\"mit -m x'";                    expect "eval with a quote-split commit" 2 "through eval"
+pre "$T" "c=commit; eval \"git \$c -m x\"";               expect "eval of a variable written in the same call" 2 "through eval"
+pre "$T" "\$(echo git commit) -a -m x";                   expect "substitution giving command and subcommand" 2 "can't resolve"
+pre "$T" "G='git commit'; \$G -m x";                      expect "variable giving command and subcommand" 2 "can't resolve"
+pre "$O" "git commit \$'--\\x61ll' -m x";                 expect "escaped --all" 2 "aren't staged"
+pre "$O" "git commit \$'-\\x61' -m x";                    expect "escaped -a" 2 "aren't staged"
+pre "$O" "git commit --author=\"\$who\" -m x";            expect "--author with a variable value" 0 "SwiftLint passed"
+pre "$O" "git commit -m\"\$msg\"";                        expect "-m with an attached variable value" 0 "SwiftLint passed"
+ln -s "$T/sub" "$WORK/sub-link"
+pre "$O" "cd -P $WORK/sub-link/.. && git commit -m x";    expect "cd -P through a symlink then .." 2 "force_cast"
+pre "$O" "cd $WORK/sub-link/.. && git commit -m x";       expect "logical cd through a symlink then .. (not a repository)" 0
+pre "$O" "git -C $WORK/sub-link/.. commit -m x";          expect "git -C follows symlinks" 2 "force_cast"
+pre "$T" "g=git; env -u UNUSED \"\$g\" commit -m x";      expect "wrapper with options and a variable command" 2 "env with options"
+pre "$T" "g=git; timeout 60 \"\$g\" commit -m x";         expect "timeout with a variable command" 2 "timeout with options"
+pre "$T" "sub=commit; env -u UNUSED git \"\$sub\" -m x";  expect "wrapper with options and a variable subcommand" 2 "env with options"
+
 echo "== git pre-commit hook"
 mkrepo "$T"
 ln -s "$H/pre-commit.sh" "$T/.git/hooks/pre-commit"

@@ -60,7 +60,7 @@ split_commands() {
             if (in_word) {
                 part = part (part == "" ? "" : "\037") word
                 if (want_delim) {
-                    delim = word; sub(/^\003/, "", delim)
+                    delim = word; sub(/^\003/, "", delim); gsub(/\004/, "", delim)  # quote removal only
                     heredocs++; heredoc_delim[heredocs] = delim; heredoc_tabs[heredocs] = want_tabs
                     want_delim = 0
                 }
@@ -202,9 +202,10 @@ redirect_kind() {
 
 # Print directory $2 resolved against $1, or "?" when the text doesn't show
 # where it leads: a variable or substitution, -, +N, ~user, a relative path
-# from an unknown directory, or a directory that doesn't exist (yet)
+# from an unknown directory, or a directory that doesn't exist (yet). With
+# $3 = physical, symlinks are followed first, as cd -P and git -C do.
 resolve_dir() {
-    local base=$1 target=$2
+    local base=$1 target=$2 mode=${3:-logical}
     case "$target" in
         *$'\004'* | - | -[0-9]* | +[0-9]* | "~"[!/]*)
             printf '?\n'
@@ -219,7 +220,11 @@ resolve_dir() {
             fi
             target="$base/$target" ;;
     esac
-    (cd "$target" 2>/dev/null && pwd -P) || printf '?\n'
+    if [ "$mode" = physical ]; then
+        (cd -P "$target" 2>/dev/null && pwd -P) || printf '?\n'
+    else
+        (cd -L "$target" 2>/dev/null && pwd -L) || printf '?\n'
+    fi
 }
 
 # Does this git commit take changes that aren't staged yet (-a, -i, -o, or
@@ -244,6 +249,9 @@ commit_takes_unstaged() {
             --*)
                 # Git accepts any unambiguous prefix of a long option
                 name=${word%%=*}
+                case "$name" in
+                    *$'\004'*) return 0 ;;  # an option the text doesn't show ($'--\x61ll')
+                esac
                 for long in --all --include --only --interactive --patch --pathspec-from-file; do
                     case "$long" in
                         "$name"*) return 0 ;;
@@ -264,7 +272,7 @@ commit_takes_unstaged() {
                     opt=${rest:0:1}
                     rest=${rest:1}
                     case "$opt" in
-                        a | i | o | p) return 0 ;;
+                        a | i | o | p | '$' | $'\004') return 0 ;;  # $: an option the text doesn't show
                         u | S) break ;;  # the rest is their optional value (-uno)
                         m | F | C | c | t)
                             [ -z "$rest" ] && takes_value=true
@@ -295,7 +303,12 @@ words_have_git_commit() {
 words_have_commit_token() {
     local j=$1 re='(^|[^[:alnum:]_.-])commit($|[^[:alnum:]_.-])'
     while [ $j -lt ${#words[@]} ]; do
-        if [[ "${words[$j]//$'\004'/}" =~ $re ]]; then
+        # Quotes inside a string can split the word: sh -c 'git com""mit'
+        word=${words[$j]//$'\004'/}
+        word=${word//\'/}
+        word=${word//\"/}
+        word=${word//\\/}
+        if [[ "$word" =~ $re ]]; then
             return 0
         fi
         j=$((j + 1))
@@ -303,18 +316,70 @@ words_have_commit_token() {
     return 1
 }
 
+# Does a word from $1 onward have a value the text doesn't show?
+words_have_unresolved() {
+    local j=$1
+    while [ $j -lt ${#words[@]} ]; do
+        case "${words[$j]}" in
+            *$'\004'*) return 0 ;;
+        esac
+        j=$((j + 1))
+    done
+    return 1
+}
+
+# Does the whole command contain "commit" as a word, with quotes and
+# backslashes removed? A value the text doesn't show must still be written in
+# the same call (shell state doesn't carry over), so `$(echo git commit)` or
+# `c=com""mit` shows up here.
+command_has_commit_token() {
+    local text=$command re='(^|[^[:alnum:]_.-])commit($|[^[:alnum:]_.-])'
+    text=${text//\'/}
+    text=${text//\"/}
+    text=${text//\\/}
+    [[ "$text" =~ $re ]]
+}
+
+# Can the words from $1 onward run a commit the hook can't see?
+words_may_hide_commit() {
+    words_have_commit_token "$1" || { words_have_unresolved "$1" && command_has_commit_token; }
+}
+
+# Does the shell at words[$1] get -c, a string to run as commands?
+shell_runs_string() {
+    local j=$(($1 + 1))
+    while [ $j -lt ${#words[@]} ]; do
+        case "${words[$j]}" in
+            --) return 1 ;;
+            -o | +o | -O | +O) j=$((j + 1)) ;;  # takes an option name
+            --*) ;;
+            [-+]*c*) return 0 ;;
+            [-+]*) ;;
+            *) return 1 ;;
+        esac
+        j=$((j + 1))
+    done
+    return 1
+}
+
 # Set CD_ARGS to the operands of the cd or pushd at words[$1]: its options
-# (-L -P -e -@, zsh's -q -s) and redirections are skipped.
+# (-L -P -e -@, zsh's -q -s) and redirections are skipped. CD_MODE is
+# physical when the last of -L and -P is -P.
 cd_operands() {
-    local j=$(($1 + 1)) re='^-[LPe@qs]+$' options=true
+    local j=$(($1 + 1)) re='^-[LPe@qs]+$' options=true flags
     CD_ARGS=()
+    CD_MODE=logical
     while [ $j -lt ${#words[@]} ]; do
         if ! ${quoted[$j]} && redirect_kind "${words[$j]}"; then
             [ "$REDIRECT" = operator ] && j=$((j + 1))
         elif $options && [ "${words[$j]}" = -- ]; then
             options=false
         elif $options && [[ "${words[$j]}" =~ $re ]]; then
-            :
+            flags=${words[$j]//[^LP]/}
+            case "$flags" in
+                *P) CD_MODE=physical ;;
+                *L) CD_MODE=logical ;;
+            esac
         else
             options=false
             CD_ARGS+=("${words[$j]}")
@@ -383,7 +448,8 @@ while IFS= read -r line; do
                     *) [ "${words[$((i + 1))]:0:1}" = - ] && opaque=true || opaque=false ;;
                 esac
                 if $opaque; then
-                    if words_have_git_commit $((i + 1)); then
+                    if words_have_git_commit $((i + 1)) ||
+                        { words_have_unresolved $((i + 1)) && command_has_commit_token; }; then
                         commit_count=$((commit_count + 1))
                         wrapper_options=${word##*/}
                     fi
@@ -399,15 +465,23 @@ while IFS= read -r line; do
     # or one that runs a string as commands: count a commit it may hide
     case "${words[$i]}" in
         *$'\004'* | =*)
-            if words_have_commit_token $((i + 1)); then
+            # The name may expand to several words, such as $(echo git commit)
+            if command_has_commit_token; then
                 commit_count=$((commit_count + 1))
                 unresolved="a command name built from a variable, substitution, or escape"
             fi
             continue ;;
-        eval | */eval | alias | source | . | sh | */sh | bash | */bash | zsh | */zsh | dash | */dash | ksh | */ksh)
-            if words_have_commit_token $((i + 1)); then
+        eval | */eval | alias | source | .)
+            if words_may_hide_commit $((i + 1)); then
                 commit_count=$((commit_count + 1))
                 unresolved="${words[$i]##*/}"
+            fi
+            continue ;;
+        sh | */sh | bash | */bash | zsh | */zsh | dash | */dash | ksh | */ksh)
+            # Only -c runs a string; otherwise the arguments go to a script
+            if shell_runs_string $i && words_may_hide_commit $((i + 1)); then
+                commit_count=$((commit_count + 1))
+                unresolved="${words[$i]##*/} -c"
             fi
             continue ;;
     esac
@@ -418,7 +492,7 @@ while IFS= read -r line; do
                 # cd alone goes home; pushd alone swaps the top two directories
                 [ "${words[$i]}" = cd ] && repo_dir=$HOME || repo_dir="?"
             elif [ ${#CD_ARGS[@]} -eq 1 ]; then
-                repo_dir=$(resolve_dir "$repo_dir" "${CD_ARGS[0]}")
+                repo_dir=$(resolve_dir "$repo_dir" "${CD_ARGS[0]}" "$CD_MODE")
             else
                 repo_dir="?"  # zsh's cd old new replaces part of the path
             fi
@@ -448,7 +522,7 @@ while IFS= read -r line; do
         fi
         case "$word" in
             -C)
-                git_dir=$(resolve_dir "$git_dir" "${words[$((i + 1))]}")
+                git_dir=$(resolve_dir "$git_dir" "${words[$((i + 1))]}" physical)  # git chdirs physically
                 i=$((i + 2)) ;;
             --git-dir | --work-tree)
                 repo_override=$word
