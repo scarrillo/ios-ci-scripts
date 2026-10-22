@@ -280,6 +280,48 @@ pre "$T" "git commit -m t"
 count=$(printf '%s' "$OUT" | grep -c 'force_cast')
 check "tab, quote, backslash, and newline names are linted ($count)" "$(yes_if [ "$count" -ge 4 ])"
 
+
+echo "== Claude hook: directories and commands it can't resolve"
+mkrepo "$T"
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+mkrepo "$O"
+printf "$CLEAN" > "$O/Clean.swift"
+git -C "$O" add Clean.swift
+pre "$O" "cd -P $T && git commit -m x";                   expect "cd -P" 2 "force_cast"
+pre "$O" "cd -L $T && git commit -m x";                   expect "cd -L" 2 "force_cast"
+pre "$O" "cd -- $T && git commit -m x";                   expect "cd --" 2 "force_cast"
+pre "$O" "cd $T 2>/dev/null && git commit -m x";          expect "cd with a redirection" 2 "force_cast"
+pre "$O" "pushd $T && git commit -m x";                   expect "pushd" 2 "force_cast"
+pre "$O" "pushd $T && popd && git commit -m x";           expect "popd: directory unknown" 2 "can't be told"
+pre "$O" "D=$T; cd \"\$D\" && git commit -m x";           expect "cd to a variable" 2 "can't be told"
+pre "$O" "cd - && git commit -m x";                       expect "cd -" 2 "can't be told"
+pre "$O" "cd ~nobody-here && git commit -m x";            expect "cd ~user" 2 "can't be told"
+pre "$O" "cd $O $T && git commit -m x";                   expect "zsh cd old new" 2 "can't be told"
+pre "$O" "mkdir -p new && cd new && git commit -m x";     expect "cd to a directory that doesn't exist yet" 2 "can't be told"
+pre "$O" "cd \"\$(git rev-parse --show-toplevel)\" && git commit -m x"; expect "cd to a substitution" 2 "can't be told"
+pre "$O" "cd \"\$D\" && cd $T && git commit -m x";        expect "an absolute cd after an unknown one" 2 "force_cast"
+pre "$O" "cd \"\$D\"; ls";                                expect "unknown cd without a commit" 0
+pre "$O" "git -C \"\$D\" commit -m x";                    expect "git -C to a variable" 2 "can't be told"
+pre "$T" "\$'git' commit -m x";                           expect "\$'git'" 2 "force_cast"
+pre "$T" "\$\"git\" commit -m x";                         expect "\$\"git\"" 2 "force_cast"
+pre "$T" "\$'g\\x69t' commit -m x";                       expect "\$'...' with an escape" 2 "can't resolve"
+pre "$T" "g=git; \$g commit -m x";                        expect "command from a variable" 2 "can't resolve"
+pre "$T" "\${GIT:-git} commit -m x";                      expect "command from \${...}" 2 "can't resolve"
+pre "$T" "\$(echo git) commit -m x";                      expect "command from a substitution" 2 "can't resolve"
+pre "$T" "=git commit -m x";                              expect "zsh =git" 2 "can't resolve"
+pre "$T" "git \$sub -m x";                                expect "git subcommand from a variable" 2 "can't resolve"
+pre "$T" "eval 'git commit -m x'";                        expect "eval" 2 "through eval"
+pre "$T" "sh -c 'git commit -m x'";                       expect "sh -c" 2 "through sh"
+pre "$T" "/bin/zsh -c \"git commit -m x\"";               expect "path-qualified zsh -c" 2 "through zsh"
+pre "$T" "alias gc='git commit'";                         expect "alias defining a commit" 2 "through alias"
+pre "$O" "\$EDITOR notes.txt";                            expect "variable command without commit" 0
+pre "$O" "echo \"\$HOME\" && git commit -m x";            expect "variable in an argument" 0 "SwiftLint passed"
+pre "$O" "git commit -m \"Fix \$x and \$(date)\"";        expect "variables inside the message" 0 "SwiftLint passed"
+pre "$O" "sh -c 'echo commit-msg'";                       expect "commit-msg isn't commit" 0
+pre "$O" "git merge --no-commit x";                       expect "--no-commit isn't commit" 0
+pre "$O" "bash script.sh";                                expect "bash running a script" 0
+
 echo "== git pre-commit hook"
 mkrepo "$T"
 ln -s "$H/pre-commit.sh" "$T/.git/hooks/pre-commit"

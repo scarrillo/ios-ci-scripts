@@ -51,7 +51,9 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 # `rg 'git commit'` is not. Each part of a pipeline, and a background command,
 # is scoped like a subshell.
 # Heredoc bodies and comments are skipped. A word that starts quoted or
-# escaped is prefixed with \003, so '>file' isn't a redirection.
+# escaped is prefixed with \003, so '>file' isn't a redirection. A word whose
+# value the text doesn't show (a $variable, a substitution, or a $'...' with
+# escapes) contains \004.
 split_commands() {
     printf '%s' "$1" | awk '
         function end_word() {
@@ -92,8 +94,10 @@ split_commands() {
         }
         function close_subst() {
             end_part(); print "\002)"
-            part = saved_part[d]; word = saved_word[d]; quote = saved_quote[d]; piped = saved_piped[d]; in_word = 1; d--
+            part = saved_part[d]; word = saved_word[d] "\004"; quote = saved_quote[d]; piped = saved_piped[d]; in_word = 1; d--
         }
+        # A $ that starts a parameter expansion ($name, ${...}, $1, $?)
+        function is_expansion(ch) { return ch ~ /[A-Za-z_{0-9@*#?$!-]/ }
         function open_group() { end_part(); d++; kind_at[d] = "("; print "\002(" }
         function close_group() { end_part(); print "\002)"; d-- }
         BEGIN { RS = "\001"; d = 0 }
@@ -106,7 +110,29 @@ split_commands() {
                     else if (c == "\"") { quote = "" }
                     else if (c == "$" && next_c == "(") { i++; open_subst("$(") }
                     else if (c == "`") { open_subst("`") }
+                    else if (c == "$" && is_expansion(next_c)) { word = word "$\004" }
                     else { word = word (c == "\n" ? " " : c) }
+                    continue
+                }
+                if (c == "$" && next_c == "\047") {
+                    # $'...' (ANSI-C quoting): escapes such as \x69 hide the value
+                    start_word(); i += 2; escaped = 0
+                    for (; i <= n; i++) {
+                        c = substr($0, i, 1)
+                        if (c == "\\" && i < n) { i++; escaped = 1; word = word substr($0, i, 1); continue }
+                        if (c == "\047") { break }
+                        word = word (c == "\n" ? " " : c)
+                    }
+                    if (escaped) { word = word "\004" }
+                    continue
+                }
+                if (c == "$" && next_c == "\"") {
+                    # $"..." (locale translation) reads like "..."
+                    i++; quote = "\""; start_word()
+                    continue
+                }
+                if (c == "$" && is_expansion(next_c)) {
+                    word = word "$\004"; in_word = 1
                     continue
                 }
                 if (c == "\047") {
@@ -174,16 +200,26 @@ redirect_kind() {
     esac
 }
 
-# Print directory $2 resolved against $1, or $1 when $2 doesn't exist
+# Print directory $2 resolved against $1, or "?" when the text doesn't show
+# where it leads: a variable or substitution, -, +N, ~user, a relative path
+# from an unknown directory, or a directory that doesn't exist (yet)
 resolve_dir() {
     local base=$1 target=$2
     case "$target" in
+        *$'\004'* | - | -[0-9]* | +[0-9]* | "~"[!/]*)
+            printf '?\n'
+            return ;;
         "~") target=$HOME ;;
         "~/"*) target="$HOME/${target#"~/"}" ;;
         /*) ;;
-        *) target="$base/$target" ;;
+        *)
+            if [ "$base" = "?" ]; then
+                printf '?\n'
+                return
+            fi
+            target="$base/$target" ;;
     esac
-    (cd "$target" 2>/dev/null && pwd -P) || printf '%s\n' "$base"
+    (cd "$target" 2>/dev/null && pwd -P) || printf '?\n'
 }
 
 # Does this git commit take changes that aren't staged yet (-a, -i, -o, or
@@ -254,10 +290,44 @@ words_have_git_commit() {
     return 1
 }
 
-# Read the commands in order. Follow `cd` and `git -C` to the repository the
-# commit runs in, restoring the directory when a subshell ends. Note any git
-# command before the commit that isn't known to leave the index alone, and any
-# form the hook can't follow, so the commit is blocked rather than unchecked.
+# Does a word from $1 onward contain "commit" as a word of its own? Used where
+# the command can't be resolved, so `$g commit` or `sh -c 'git commit'` count.
+words_have_commit_token() {
+    local j=$1 re='(^|[^[:alnum:]_.-])commit($|[^[:alnum:]_.-])'
+    while [ $j -lt ${#words[@]} ]; do
+        if [[ "${words[$j]//$'\004'/}" =~ $re ]]; then
+            return 0
+        fi
+        j=$((j + 1))
+    done
+    return 1
+}
+
+# Set CD_ARGS to the operands of the cd or pushd at words[$1]: its options
+# (-L -P -e -@, zsh's -q -s) and redirections are skipped.
+cd_operands() {
+    local j=$(($1 + 1)) re='^-[LPe@qs]+$' options=true
+    CD_ARGS=()
+    while [ $j -lt ${#words[@]} ]; do
+        if ! ${quoted[$j]} && redirect_kind "${words[$j]}"; then
+            [ "$REDIRECT" = operator ] && j=$((j + 1))
+        elif $options && [ "${words[$j]}" = -- ]; then
+            options=false
+        elif $options && [[ "${words[$j]}" =~ $re ]]; then
+            :
+        else
+            options=false
+            CD_ARGS+=("${words[$j]}")
+        fi
+        j=$((j + 1))
+    done
+}
+
+# Read the commands in order. Follow `cd`, `pushd`, and `git -C` to the
+# repository the commit runs in, restoring the directory when a subshell ends.
+# Note any git command before the commit that isn't known to leave the index
+# alone, and any form the hook can't follow, so the commit is blocked rather
+# than unchecked. A directory the text doesn't show is "?".
 repo_dir="${hook_cwd:-$CLAUDE_PROJECT_DIR}"
 dir_stack=()
 commit_count=0
@@ -266,6 +336,7 @@ commit_args=()
 index_changed_by=""
 repo_override=""
 wrapper_options=""
+unresolved=""
 while IFS= read -r line; do
     case "$line" in
         $'\002(')
@@ -324,9 +395,36 @@ while IFS= read -r line; do
             *) break ;;
         esac
     done
+    # A command name the text doesn't show ($g, $(...), escapes, zsh's =git),
+    # or one that runs a string as commands: count a commit it may hide
     case "${words[$i]}" in
-        cd)
-            repo_dir=$(resolve_dir "$repo_dir" "${words[$((i + 1))]:-$HOME}")
+        *$'\004'* | =*)
+            if words_have_commit_token $((i + 1)); then
+                commit_count=$((commit_count + 1))
+                unresolved="a command name built from a variable, substitution, or escape"
+            fi
+            continue ;;
+        eval | */eval | alias | source | . | sh | */sh | bash | */bash | zsh | */zsh | dash | */dash | ksh | */ksh)
+            if words_have_commit_token $((i + 1)); then
+                commit_count=$((commit_count + 1))
+                unresolved="${words[$i]##*/}"
+            fi
+            continue ;;
+    esac
+    case "${words[$i]}" in
+        cd | pushd)
+            cd_operands $i
+            if [ ${#CD_ARGS[@]} -eq 0 ]; then
+                # cd alone goes home; pushd alone swaps the top two directories
+                [ "${words[$i]}" = cd ] && repo_dir=$HOME || repo_dir="?"
+            elif [ ${#CD_ARGS[@]} -eq 1 ]; then
+                repo_dir=$(resolve_dir "$repo_dir" "${CD_ARGS[0]}")
+            else
+                repo_dir="?"  # zsh's cd old new replaces part of the path
+            fi
+            continue ;;
+        popd)
+            repo_dir="?"
             continue ;;
         export | declare | typeset)
             for word in "${words[@]:$((i + 1))}"; do
@@ -379,6 +477,10 @@ while IFS= read -r line; do
                     k=$((k + 1))
                 done
             fi ;;
+        # A subcommand the text doesn't show may be commit
+        *$'\004'*)
+            commit_count=$((commit_count + 1))
+            unresolved="a git subcommand built from a variable or substitution" ;;
         # Known to leave the index alone
         "" | status | diff | log | show | rev-parse | rev-list | ls-files | ls-tree | cat-file | describe | \
             blame | grep | shortlog | show-ref | for-each-ref | symbolic-ref | merge-base | name-rev | \
@@ -395,6 +497,16 @@ if [ $commit_count = 0 ]; then
     exit 0
 fi
 
+if [ -n "$unresolved" ]; then
+    echo "Commit blocked: this command may run git commit through $unresolved, which this hook can't resolve." >&2
+    echo "Run git commit directly, with the command name spelled out." >&2
+    exit 2
+fi
+if [ "$commit_dir" = "?" ]; then
+    echo "Commit blocked: the directory git commit runs in can't be told from the command (a cd or pushd to a variable, -, +N, or a directory that doesn't exist yet)." >&2
+    echo "Run git commit from the repository directly, or cd to a literal path first." >&2
+    exit 2
+fi
 if [ -n "$wrapper_options" ]; then
     echo "Commit blocked: git commit runs under $wrapper_options with options or arguments this hook can't follow." >&2
     echo "Run git commit directly, without $wrapper_options." >&2
