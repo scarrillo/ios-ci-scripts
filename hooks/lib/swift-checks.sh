@@ -200,3 +200,57 @@ swift_checks_staged() {
     echo "SwiftLint passed." >&2
     return 0
 }
+
+# Where pre-commit.sh records the staged tree it passed, so post-commit.sh
+# can tell a checked commit from one made with git commit --no-verify
+swift_checks_marker() {
+    git rev-parse --git-path swift-checks-passed
+}
+
+# Check the Swift files commit $1 added or changed, from the commit's own
+# content. Findings go to stderr. Returns 1 when there are any.
+swift_checks_commit() {
+    local rev=$1 file output parent issues=0
+    local files=()
+    while IFS= read -r -d '' file; do
+        case "$file" in
+            *.swift) ;;
+            *) continue ;;
+        esac
+        if git ls-tree "$rev" -- "$file" | grep -q '^120000 '; then
+            continue  # a symlink
+        fi
+        files+=("$file")
+    done < <(git diff-tree --no-commit-id --name-only -r -z --root --diff-filter=ACMR "$rev")
+    if [ ${#files[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    swift_checks_path
+    swift_checks_toolchain
+    if ! swift_checks_tools; then
+        echo "warning: the Swift files in this commit weren't checked: lint tools are missing." >&2
+        return 1
+    fi
+    if parent=$(swift_checks_missing_parent); then
+        echo "warning: .swiftlint.local.yml inherits from $parent, which is missing, so SwiftLint skips its rules." >&2
+        issues=1
+    fi
+    swift_checks_lint_args
+
+    for file in "${files[@]}"; do
+        if [ -f ".swift-format" ]; then
+            output=$(git cat-file blob "$rev:$file" |
+                swift format lint --configuration .swift-format --assume-filename "$file" - 2>&1)
+            if printf '%s' "$output" | grep -qE ': (warning|error): '; then
+                printf '%s\n' "$output" >&2
+                issues=1
+            fi
+        fi
+        if ! output=$(git cat-file blob "$rev:$file" | swiftlint lint --use-stdin "${LINT_ARGS[@]}" 2>&1); then
+            printf '%s\n' "${output//<nopath>/$file}" >&2
+            issues=1
+        fi
+    done
+    return $issues
+}
