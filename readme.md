@@ -18,10 +18,12 @@ These scripts also served as the inspiration for the [Claude Code Release Plugin
   - [testflight_whattotest.sh](#testflight_whattotestsh)
   - [distribute.sh](#distributesh)
 - [Claude Code Lint Hooks](#claude-code-lint-hooks)
+  - [pre-commit.sh](#hookspre-commitsh)
+  - [post-commit.sh](#hookspost-commitsh)
+  - [install-git-hooks.sh](#hooksinstall-git-hookssh)
+  - [Commit checks](#commit-checks)
   - [post-edit-lint.sh](#hookspost-edit-lintsh)
   - [pre-commit-lint.sh](#hookspre-commit-lintsh)
-  - [pre-commit.sh](#hookspre-commitsh)
-  - [Commit checks](#commit-checks)
   - [Setup](#hook-setup)
   - [Prerequisites](#hook-prerequisites)
   - [Tests](#hook-tests)
@@ -376,58 +378,42 @@ Firebase project with the app's bundle ID registered as an iOS app, the
 
 ## Claude Code Lint Hooks
 
-Shared [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks and a git `pre-commit` hook that provide consistent swift-format and SwiftLint checks across all projects using this submodule. They live in `hooks/`: the Claude Code hooks are referenced by each project's `.claude/settings.json`, and the commit checks are shared through `hooks/lib/swift-checks.sh`.
+Shared git hooks and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that give consistent swift-format and SwiftLint checks across all projects using this submodule. They live in `hooks/`, and the checks are shared through `hooks/lib/swift-checks.sh`.
 
-### hooks/post-edit-lint.sh
-
-**PostToolUse** hook for `Edit|Write`. Runs after Claude edits or creates a Swift file, giving immediate lint feedback per file, using the configs of the repository that holds the file. Claude only sees a PostToolUse hook's output as JSON, so findings are sent as `additionalContext`; a clean file prints plain "pass" lines for the transcript.
-
-| Behavior | Detail |
-|----------|--------|
-| Skips non-`.swift` files | Exits silently |
-| swift-format | Lint-only (no auto-fix) — reports issues to Claude, doesn't block |
-| SwiftLint | Reports errors and warnings to Claude — doesn't block edits |
-| Missing tools | Reports to Claude and allows the edit. A `swiftlint` that can't run (for example an x86_64 build without Rosetta) counts as missing, not as a pass |
-| Missing parent config | Reports to Claude when `.swiftlint.local.yml` inherits from a file that is missing, for example an uninitialized submodule |
-
-### hooks/pre-commit-lint.sh
-
-**PreToolUse** hook for `Bash`. Runs before every Bash call and acts only on an actual `git commit`, as a formatting and lint check on what Claude commits. It reads the command's words, honoring quotes, so `rg 'git commit'` or a commit message that mentions `git add` doesn't trigger it, while `a && git commit`, `x="$(git commit)"`, backticks, subshells, `if …; then git commit`, and `git -C dir commit` do. Heredoc bodies are skipped.
-
-This check is best effort: it runs before the shell does and predicts what the command will do. When it can't tell, it blocks and asks for a simpler command. To enforce formatting and lint on every commit, also install the git hook, [hooks/pre-commit.sh](#hookspre-commitsh), which runs after staging and sees exactly what git commits.
-
-| Behavior | Detail |
-|----------|--------|
-| Shared checks | Everything in [Commit checks](#commit-checks). A failure **blocks the commit** (exit 2) |
-| Warnings | Sent to Claude as `additionalContext` when the commit is allowed |
-| Staging in the same call | **Blocks commit** (exit 2) when a git command not known to leave the index alone (for example `git add`, `git rm`, `git cherry-pick -n`) runs in the same Bash call as `git commit`. The hook runs before the whole call, so it can't see what gets staged. Stage first, then commit as its own call. Read-only commands such as `git status` or `git diff` are allowed |
-| Unstaged content | **Blocks commit** (exit 2) for `git commit -a`, `-i`, `-o`, or with paths, which commit changes the hook can't check beforehand |
-| Another repository or index | **Blocks commit** (exit 2) when `--git-dir`, `--work-tree`, `GIT_DIR`, `GIT_WORK_TREE`, or `GIT_INDEX_FILE` is set in the command |
-| Forms it can't follow | **Blocks commit** (exit 2) when one Bash call runs `git commit` more than once, or runs it under a wrapper with options (`env -u X git commit`, `sudo -u me git commit`) |
-| Repository | The one the commit runs in: the hook input's `cwd`, followed through `cd` and `git -C` (a `cd` inside a subshell ends with it), so a worktree or submodule is checked against its own index and configs |
-| jq missing | **Blocks commit** (exit 2) when the input looks like a commit, since the command can't be read; other commands pass |
-
-Limits: aliases, `eval`, `sh -c`, and scripts that stage files aren't followed; a `$(…)` inside an unquoted heredoc isn't followed; and quoting is tracked per word, so a redirection character quoted partway through a word (`2\>file`) is read as a redirection.
+Commits are checked by **git hooks**, not by predicting shell commands: git runs `pre-commit` after staging, in the real repository, with exactly what gets committed, for every client and every way of writing the command. A Claude Code `SessionStart` hook installs them, so every Claude session has them.
 
 ### hooks/pre-commit.sh
 
-A git `pre-commit` hook running the [Commit checks](#commit-checks). Git runs it after staging, for every commit from any client, so it sees exactly what gets committed, including `git commit -a`. A failure blocks the commit (exit 1). Install it from the project root; an existing hook is left in place:
+A git `pre-commit` hook running the [Commit checks](#commit-checks). A failure blocks the commit (exit 1), and the output shows what to fix. On success it records the staged tree, so `post-commit.sh` can tell the commit was checked.
+
+### hooks/post-commit.sh
+
+A git `post-commit` hook. Git skips `pre-commit` for `git commit --no-verify` (or `-n`) but still runs `post-commit`. When the new commit isn't the content `pre-commit.sh` passed, this checks the commit's Swift files and prints the findings with a warning. It can't undo the commit; fix the files and commit again. It stays quiet for checked commits, commits without Swift changes, and during a rebase.
+
+### hooks/install-git-hooks.sh
+
+Links `pre-commit.sh` and `post-commit.sh` into the repository's hooks directory (`git rev-parse --git-path hooks`, so `core.hooksPath` and worktrees work).
+
+| Case | Behavior |
+|------|----------|
+| No hook yet | Links it |
+| Already linked | Nothing to do; safe to run again |
+| A link to these scripts in another location, such as a moved clone | Updates the link |
+| Another hook already there | **Left alone.** The report gives the line to add to it: `"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" \|\| exit 1` |
+| An existing hook that already calls these | Nothing to do |
+| Outside a repository | Nothing to do |
+
+Run it once from the project root to install the hooks for your own commits:
 
 ```bash
-hook="$(git rev-parse --git-path hooks)/pre-commit"
-if [ -e "$hook" ] || [ -L "$hook" ]; then
-    echo "$hook already exists. Add this line to it instead:"
-    echo '"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" || exit 1'
-else
-    ln -s "$PWD/ci_scripts/hooks/pre-commit.sh" "$hook"
-fi
+ci_scripts/hooks/install-git-hooks.sh
 ```
 
-From an existing hook or another hook manager (for example `.husky/pre-commit`), call `"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" || exit 1`. With both this and the Claude Code hook installed, a commit from Claude is checked twice; formatting is idempotent.
+With `--claude`, as in the `SessionStart` hook below, it reports only a hook it left alone, as JSON that Claude reads. It always exits 0.
 
 ### Commit checks
 
-`hooks/lib/swift-checks.sh`, shared by both commit hooks, checks the staged Swift files of the repository:
+`hooks/lib/swift-checks.sh` checks the staged Swift files of the repository:
 
 | Behavior | Detail |
 |----------|--------|
@@ -444,6 +430,22 @@ From an existing hook or another hook manager (for example `.husky/pre-commit`),
 
 Standard-input linting of partly staged files doesn't apply the config's `excluded` paths.
 
+### hooks/post-edit-lint.sh
+
+**PostToolUse** hook for `Edit|Write`. Runs after Claude edits or creates a Swift file, giving immediate lint feedback per file, using the configs of the repository that holds the file. Claude only sees a PostToolUse hook's output as JSON, so findings are sent as `additionalContext`; a clean file prints plain "pass" lines for the transcript.
+
+| Behavior | Detail |
+|----------|--------|
+| Skips non-`.swift` files | Exits silently |
+| swift-format | Lint-only (no auto-fix) — reports issues to Claude, doesn't block |
+| SwiftLint | Reports errors and warnings to Claude — doesn't block edits |
+| Missing tools | Reports to Claude and allows the edit. A `swiftlint` that can't run (for example an x86_64 build without Rosetta) counts as missing, not as a pass |
+| Missing parent config | Reports to Claude when `.swiftlint.local.yml` inherits from a file that is missing, for example an uninitialized submodule |
+
+### hooks/pre-commit-lint.sh
+
+A compatibility shim. It used to check commits by reading the Bash command before it ran, which can't be done reliably. Projects whose `.claude/settings.json` still runs it as a `PreToolUse` hook keep working: it installs the git hooks and allows every command. New setups use the `SessionStart` hook instead.
+
 ### Hook Setup
 
 Add the following to your project's `.claude/settings.json`:
@@ -451,6 +453,16 @@ Add the following to your project's `.claude/settings.json`:
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/ci_scripts/hooks/install-git-hooks.sh --claude"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -461,25 +473,22 @@ Add the following to your project's `.claude/settings.json`:
           }
         ]
       }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/ci_scripts/hooks/pre-commit-lint.sh"
-          }
-        ]
-      }
     ]
   }
 }
 ```
 
-A `matcher` matches the tool name only, so `Bash(git commit*)` never fires. Use `"matcher": "Bash"`; the script finds `git commit` itself. A handler-level `"if": "Bash(git commit *)"` is not needed, and would skip forms such as `git -C dir commit`.
+`$CLAUDE_PROJECT_DIR` is set automatically by Claude Code to the project root, so the paths resolve correctly regardless of where Claude invokes the hook from. A `matcher` matches the tool name only, so a form such as `Bash(git commit*)` never fires.
 
-`$CLAUDE_PROJECT_DIR` is set automatically by Claude Code to the project root, so the paths resolve correctly regardless of where Claude invokes the hook from.
+Optionally, discourage Claude from skipping the checks with permission deny rules. They match each part of a chained command, but only in the position written, and they aren't a security boundary; `post-commit.sh` still catches what they miss:
+
+```json
+{
+  "permissions": {
+    "deny": ["Bash(git commit --no-verify *)", "Bash(git commit -n *)"]
+  }
+}
+```
 
 ### Hook Prerequisites
 
@@ -487,7 +496,7 @@ A `matcher` matches the tool name only, so `Bash(git commit*)` never fires. Use 
 |------|---------|-------------|
 | swift-format | Included with Xcode (Swift 5.9+) | All hooks |
 | SwiftLint | `brew install swiftlint` | All hooks |
-| jq | Included with recent macOS, or `brew install jq` | Claude Code hooks (parses hook input) |
+| jq | Included with recent macOS, or `brew install jq` | Claude Code hooks (reads hook input, writes JSON for Claude) |
 
 On Apple Silicon, when `/opt/homebrew/bin` isn't on `PATH` (a session started outside a login shell), the hooks add it first, so an x86_64 tool in `/usr/local/bin` doesn't win. An existing `PATH` that lists it keeps its order. Elsewhere `PATH` is unchanged.
 
@@ -499,7 +508,7 @@ When `swift format` isn't available because the Command Line Tools are selected 
 tests/hooks.sh
 ```
 
-Runs the hooks against throwaway repositories with the system bash (3.2 on macOS). Requires git, jq, swift-format, and SwiftLint; skips when one is missing.
+Runs the hooks against throwaway repositories with the system bash (3.2 on macOS), making real commits. Requires git, jq, swift-format, and SwiftLint; skips when one is missing.
 
 ### Configuration Precedence
 
@@ -562,9 +571,11 @@ YourApp/
 ├── ci_scripts/               # ← Submodule (this repo)
 │   ├── hooks/
 │   │   ├── lib/swift-checks.sh
+│   │   ├── install-git-hooks.sh  # ← run by the SessionStart hook
+│   │   ├── post-commit.sh
 │   │   ├── post-edit-lint.sh
-│   │   ├── pre-commit-lint.sh
-│   │   └── pre-commit.sh     # ← git pre-commit hook (optional)
+│   │   ├── pre-commit-lint.sh    # compatibility shim
+│   │   └── pre-commit.sh
 │   ├── workflows/
 │   │   └── tag-on-merge.yml  # ← Copy to .github/workflows/
 │   ├── ci_post_clone.sh
