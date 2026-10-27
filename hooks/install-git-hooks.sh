@@ -19,6 +19,9 @@
 
 # These scripts' directory as it was called, before changing directories
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/swift-checks.sh
+source "$script_dir/lib/swift-checks.sh"
+swift_checks_path  # for jq
 
 mode=terminal
 case "$1" in

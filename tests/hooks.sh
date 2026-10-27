@@ -405,6 +405,17 @@ shim s1
 check "  once per session" "$(yes_if [ -z "$OUT" ])"
 shim s2
 check "  and again in a new session" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "left alone"' _ "$OUT")"
+# A session started outside a login shell, with jq only in Apple Silicon Homebrew
+if [ -x /opt/homebrew/bin/jq ]; then
+    mkdir -p "$WORK/nojq"
+    for tool in git dirname cat grep sed head chmod mkdir; do
+        ln -sf "$(command -v "$tool")" "$WORK/nojq/$tool"
+    done
+    OUT=$(printf '{"session_id":"s3"}' | env PATH="$WORK/nojq" CLAUDE_PROJECT_DIR="$T" /bin/bash "$T/ci_scripts/hooks/pre-commit-lint.sh" 2>&1); CODE=$?
+    check "  and with jq only in Homebrew, off PATH" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "left alone"' _ "$OUT")"
+    OUT=$(printf '{}' | env PATH="$WORK/nojq" CLAUDE_PROJECT_DIR="$T" "$T/ci_scripts/hooks/install-git-hooks.sh" --claude 2>/dev/null); CODE=$?
+    check "  the installer's --claude JSON too" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "hookSpecificOutput"' _ "$OUT")"
+fi
 
 echo "== post-edit-lint.sh"
 mkrepo "$T"

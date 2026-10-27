@@ -10,8 +10,13 @@
 # instead of this one.
 #
 
+hook_dir=$(dirname "${BASH_SOURCE[0]}")
+# shellcheck source=lib/swift-checks.sh
+source "$hook_dir/lib/swift-checks.sh"
+swift_checks_path  # for jq
+
 input=$(cat)
-report=$("$(dirname "${BASH_SOURCE[0]}")/install-git-hooks.sh" --quiet 2>/dev/null)
+report=$("$hook_dir/install-git-hooks.sh" --quiet 2>/dev/null)
 if [ -z "$report" ]; then
     exit 0
 fi
