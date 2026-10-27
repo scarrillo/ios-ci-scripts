@@ -380,7 +380,7 @@ Firebase project with the app's bundle ID registered as an iOS app, the
 
 Shared git hooks and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that give consistent swift-format and SwiftLint checks across all projects using this submodule. They live in `hooks/`, and the checks are shared through `hooks/lib/swift-checks.sh`.
 
-Commits are checked by **git hooks**, not by predicting shell commands: git runs `pre-commit` after staging, in the real repository, with exactly what gets committed, for every client and every way of writing the command. A Claude Code `SessionStart` hook installs them, so every Claude session has them.
+Commits are checked by **git hooks**, not by predicting shell commands: git runs `pre-commit` after staging, in the real repository, with exactly what gets committed, for every client and every way of writing the command. The project commits two small hooks in `.githooks/` that run these scripts, and `core.hooksPath` points git at them. `install-git-hooks.sh` sets both up, and a Claude Code `SessionStart` hook runs it, so every Claude session has them.
 
 ### hooks/pre-commit.sh
 
@@ -388,45 +388,63 @@ A git `pre-commit` hook running the [Commit checks](#commit-checks). A failure b
 
 ### hooks/post-commit.sh
 
-A git `post-commit` hook. Git skips `pre-commit` for `git commit --no-verify` (or `-n`) but still runs `post-commit`. When the new commit isn't the content `pre-commit.sh` passed, this checks the commit's Swift files and prints the findings with a warning. It can't undo the commit; fix the files and commit again. It stays quiet for checked commits, commits without Swift changes, and during a rebase.
+A git `post-commit` hook. Git skips `pre-commit` for `git commit --no-verify` (or `-n`) but still runs `post-commit`. When the new commit isn't the content `pre-commit.sh` passed, this runs the [Commit checks](#commit-checks) on the commit's Swift files without changing anything, and prints the findings with a warning. It can't undo the commit; fix the files and commit again. It stays quiet for checked commits, commits without Swift changes, and during a rebase.
 
 ### hooks/install-git-hooks.sh
 
-Links `pre-commit.sh` and `post-commit.sh` into the repository's hooks directory (`git rev-parse --git-path hooks`, so `core.hooksPath` and worktrees work).
+Sets up the project's tracked hooks. `.githooks/pre-commit` and `.githooks/post-commit` each run the matching script from the checkout making the commit:
+
+```sh
+#!/bin/sh
+hook="$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh"
+if [ ! -f "$hook" ]; then
+    echo "error: $hook is missing. Run: git submodule update --init" >&2
+    exit 1
+fi
+exec "$hook" "$@"
+```
+
+The installer writes these when they're missing and sets `core.hooksPath` to `.githooks`. That setting is shared by every worktree, and its relative path points each worktree to its own `.githooks/`, so each clone and worktree runs its own copy of the checks, and removing a worktree can't break another.
 
 | Case | Behavior |
 |------|----------|
-| No hook yet | Links it |
-| Already linked | Nothing to do; safe to run again |
-| A link to these scripts in another location, such as a moved clone | Updates the link |
-| Another hook already there | **Left alone.** The report gives the line to add to it: `"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" \|\| exit 1` |
-| An existing hook that already calls these | Nothing to do |
+| No `.githooks` hooks yet | Creates them, and asks for them to be committed |
+| `core.hooksPath` not set | Sets it to `.githooks` |
+| Already set up and committed | Nothing to do; safe to run again |
+| A `.githooks` hook that doesn't run these | **Left alone.** The report gives the line to add to it: `"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" \|\| exit 1` |
+| Hooks in `.git/hooks`, for example from Git LFS | **`core.hooksPath` isn't set**, because git would stop running them. The report says to move them into `.githooks/` (or call them from its hooks) and run it again |
+| `core.hooksPath` set to another directory, such as a hook manager's | **Left alone.** Nothing to do when that directory's hooks call these; otherwise the report gives the line to add |
+| These scripts outside the repository | Reported; nothing is set up |
 | Outside a repository | Nothing to do |
 
-Run it once from the project root to install the hooks for your own commits:
+Run it once from the project root, then commit the hooks:
 
 ```bash
 ci_scripts/hooks/install-git-hooks.sh
+git add .githooks
+git commit -m "Add git hooks for the Swift checks"
 ```
 
-With `--claude`, as in the `SessionStart` hook below, it reports only a hook it left alone, as JSON that Claude reads. It always exits 0.
+Each clone then needs `core.hooksPath` set once, by running it again or by the `SessionStart` hook below. A checkout without `ci_scripts`, such as a worktree whose submodule isn't initialized, can't commit until it runs `git submodule update --init`. A branch from before `.githooks/` was committed runs no hooks, because git skips hooks that aren't there.
+
+With `--quiet` it reports only what needs action, and with `--claude` it sends that as JSON that Claude reads. It always exits 0.
 
 ### Commit checks
 
-`hooks/lib/swift-checks.sh` checks the staged Swift files of the repository:
+`hooks/lib/swift-checks.sh` checks the Swift files of the staged content (`pre-commit.sh`) or of a commit (`post-commit.sh`), with the same file selection and rules. Where `pre-commit.sh` blocks the commit, `post-commit.sh` warns.
 
 | Behavior | Detail |
 |----------|--------|
-| Files | Added, copied, modified, and renamed `.swift` files, read null-separated so any file name works |
-| swift-format | Auto-formats staged files in place and re-stages them |
-| Partly staged files | A staged file that also has unstaged changes is not auto-formatted (warning), because re-staging would commit those changes. Its staged content is linted, not the working copy |
-| SwiftLint | Lints staged files — **blocks the commit on errors** |
-| Symlinks | A staged symlink is skipped with a warning, so formatting can't write through a link. A staged regular file whose working copy is now a symlink is checked like a partly staged file |
-| swift-format failure | **Blocks the commit** when swift-format can't format a file, for example with a malformed `.swift-format` |
-| Merges | During a merge, a file whose staged content matches a merge parent (brought in unchanged) is skipped. A heuristic, not a detector for hand-resolved conflicts |
+| Files | Added, copied, and modified `.swift` files (a renamed file counts as added), read null-separated so any file name works |
+| swift-format | Auto-formats fully staged files in place and re-stages them. `post-commit.sh` reports formatting differences instead |
+| Partly staged files | A file whose working copy differs from the content being checked, such as a staged file with unstaged changes, is not auto-formatted (warning), because re-staging would commit those changes. That content is linted, not the working copy |
+| SwiftLint | Lints the files — **blocks the commit on errors** |
+| Symlinks | A Swift symlink is skipped with a warning, so formatting can't write through a link. A regular file whose working copy is now a symlink is checked like a partly staged file |
+| swift-format failure | **Blocks the commit** when swift-format can't format or check a file, for example with a malformed `.swift-format` |
+| Merges | A file whose content matches another merge parent (brought in unchanged) is skipped, so a merge is checked for the files its resolution changed, including a merge finished with `--no-verify`. A heuristic, not a detector for hand-resolved conflicts |
 | Missing parent config | **Blocks the commit** when `.swiftlint.local.yml` inherits from a file that is missing, because SwiftLint would only warn and lint without the parent's rules |
 | Missing tools | **Blocks the commit** — both tools are required. A `swiftlint` that can't run counts as missing |
-| No staged Swift files | Skips |
+| No Swift files | Skips |
 
 Standard-input linting of partly staged files doesn't apply the config's `excluded` paths.
 
@@ -444,11 +462,11 @@ Standard-input linting of partly staged files doesn't apply the config's `exclud
 
 ### hooks/pre-commit-lint.sh
 
-A compatibility shim. It used to check commits by reading the Bash command before it ran, which can't be done reliably. Projects whose `.claude/settings.json` still runs it as a `PreToolUse` hook keep working: it installs the git hooks and allows every command. New setups use the `SessionStart` hook instead.
+A compatibility shim. It used to check commits by reading the Bash command before it ran, which can't be done reliably. Projects whose `.claude/settings.json` still runs it as a `PreToolUse` hook keep working: it runs `install-git-hooks.sh` and allows every command. When the setup needs action, such as `.githooks/` to commit or a hook it left alone, it tells Claude once per session. New setups use the `SessionStart` hook instead.
 
 ### Hook Setup
 
-Add the following to your project's `.claude/settings.json`:
+After committing `.githooks/` (see [install-git-hooks.sh](#hooksinstall-git-hookssh)), add the following to your project's `.claude/settings.json`:
 
 ```json
 {
@@ -568,6 +586,9 @@ YourApp/
 │   └── ...
 ├── .claude/
 │   └── settings.json        # ← Hook paths point to ci_scripts/hooks/
+├── .githooks/                # ← Committed; run ci_scripts/hooks/ (install-git-hooks.sh)
+│   ├── post-commit
+│   └── pre-commit
 ├── ci_scripts/               # ← Submodule (this repo)
 │   ├── hooks/
 │   │   ├── lib/swift-checks.sh

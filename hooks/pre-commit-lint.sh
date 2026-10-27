@@ -3,24 +3,27 @@
 # pre-commit-lint.sh - Compatibility shim for an older Claude Code setup
 #
 # Projects whose .claude/settings.json still runs this as a PreToolUse hook
-# for Bash keep working: it makes sure the git hooks are installed and allows
-# every command. The commit checks run in the git pre-commit hook
-# (pre-commit.sh), which sees exactly what gets committed. New setups use the
-# SessionStart hook in the README instead of this one.
+# for Bash keep working: it runs install-git-hooks.sh, which sets up the git
+# hooks that check commits (pre-commit.sh sees exactly what gets committed),
+# and allows every command. When the setup needs action, it tells Claude
+# once per session. New setups use the SessionStart hook in the README
+# instead of this one.
 #
 
-# Find this script's directory, following symlinks
-source_path=${BASH_SOURCE[0]}
-while [ -L "$source_path" ]; do
-    link_dir=$(cd -P "$(dirname "$source_path")" && pwd)
-    source_path=$(readlink "$source_path")
-    case "$source_path" in
-        /*) ;;
-        *) source_path="$link_dir/$source_path" ;;
-    esac
-done
-hook_dir=$(cd -P "$(dirname "$source_path")" && pwd)
+input=$(cat)
+report=$("$(dirname "${BASH_SOURCE[0]}")/install-git-hooks.sh" --quiet 2>/dev/null)
+if [ -z "$report" ]; then
+    exit 0
+fi
 
-cat >/dev/null  # the tool input isn't needed
-"$hook_dir/install-git-hooks.sh" >/dev/null 2>&1
+# Report once per session: this runs before every Bash command
+cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
+stamp=$(git rev-parse --git-path swift-checks-reported 2>/dev/null) || exit 0
+session=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+if [ -n "$session" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$session" ]; then
+    exit 0
+fi
+printf '%s\n' "$session" > "$stamp" 2>/dev/null
+jq -n --arg context "install-git-hooks: $report" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $context}}' 2>/dev/null
 exit 0

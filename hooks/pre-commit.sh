@@ -7,14 +7,14 @@
 # On success it records the staged tree, so post-commit.sh can tell this
 # commit was checked.
 #
-# Install with install-git-hooks.sh. From an existing hook or another hook
-# manager (for example .husky/pre-commit), call:
+# install-git-hooks.sh sets up .githooks/pre-commit to run it. From another
+# hook or a hook manager (for example .husky/pre-commit), call:
 #   "$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" || exit 1
 #
 # Exit code 0 = allow commit, Exit code 1 = block commit
 #
 
-# Find this script's directory, following symlinks (.git/hooks/pre-commit)
+# Find this script's directory, following symlinks
 source_path=${BASH_SOURCE[0]}
 while [ -L "$source_path" ]; do
     link_dir=$(cd -P "$(dirname "$source_path")" && pwd)

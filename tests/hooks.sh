@@ -43,7 +43,7 @@ mkrepo() {
     printf 'parent_config: ci_scripts/.swiftlint.yml\n' > "$1/.swiftlint.local.yml"
     ln -s "$ROOT" "$1/ci_scripts"
     if [ "$2" = hooks ]; then
-        (cd "$1" && env -u CLAUDE_PROJECT_DIR "$H/install-git-hooks.sh" >/dev/null)
+        (cd "$1" && env -u CLAUDE_PROJECT_DIR ci_scripts/hooks/install-git-hooks.sh >/dev/null)
     fi
 }
 # Commit in repository $1 with git commit arguments $2...; sets OUT and CODE
@@ -84,15 +84,69 @@ T=$WORK/main
 O=$WORK/other
 
 echo "== install-git-hooks.sh"
+# Run the installer the way a project does, from its ci_scripts: install [args]; sets OUT and CODE
+install() {
+    OUT=$(cd "$T" && env -u CLAUDE_PROJECT_DIR ci_scripts/hooks/install-git-hooks.sh "$@" < /dev/null); CODE=$?
+}
 mkrepo "$T"
-OUT=$(cd "$T" && env -u CLAUDE_PROJECT_DIR "$H/install-git-hooks.sh"); CODE=$?
-expect "fresh install reports both hooks" 0 "Installed"
-check "pre-commit links to pre-commit.sh" "$(yes_if [ "$(readlink "$T/.git/hooks/pre-commit")" = "$H/pre-commit.sh" ])"
-check "post-commit links to post-commit.sh" "$(yes_if [ "$(readlink "$T/.git/hooks/post-commit")" = "$H/post-commit.sh" ])"
-OUT=$(cd "$T" && env -u CLAUDE_PROJECT_DIR "$H/install-git-hooks.sh"); CODE=$?
-check "running again is silent" "$(yes_if [ -z "$OUT" ])"
-OUT=$(printf '{"source":"startup"}' | env CLAUDE_PROJECT_DIR="$T" "$H/install-git-hooks.sh" --claude); CODE=$?
+install
+expect "fresh setup creates the tracked hooks" 0 "Created .githooks/pre-commit."
+check "  and sets core.hooksPath to .githooks" "$(yes_if [ "$(git -C "$T" config core.hooksPath)" = .githooks ])"
+check "  both executable" "$(yes_if [ -x "$T/.githooks/pre-commit" -a -x "$T/.githooks/post-commit" ])"
+check "  calling the scripts by their path in the project" "$(yes_if grep -qF '/ci_scripts/hooks/pre-commit.sh"' "$T/.githooks/pre-commit")"
+check "  and asks for them to be committed" "$(yes_if sh -c 'printf "%s" "$1" | grep -qF "Commit .githooks/pre-commit .githooks/post-commit"' _ "$OUT")"
+OUT=$(printf '{"source":"startup"}' | env CLAUDE_PROJECT_DIR="$T" "$T/ci_scripts/hooks/install-git-hooks.sh" --claude); CODE=$?
+check "--claude reports uncommitted hooks as JSON" "$(yes_if sh -c 'printf "%s" "$1" | jq -e ".hookSpecificOutput.additionalContext | contains(\"Commit .githooks\")" >/dev/null' _ "$OUT")"
+git -C "$T" add .githooks
+commit "$T" -m hooks
+install
+check "running again after committing them is silent" "$(yes_if [ -z "$OUT" ])"
+OUT=$(printf '{"source":"startup"}' | env CLAUDE_PROJECT_DIR="$T" "$T/ci_scripts/hooks/install-git-hooks.sh" --claude); CODE=$?
 check "--claude with nothing to report prints nothing" "$(yes_if [ -z "$OUT" ])"
+mkdir -p "$T/sub"
+OUT=$(cd "$T/sub" && env -u CLAUDE_PROJECT_DIR ../ci_scripts/hooks/install-git-hooks.sh); CODE=$?
+check "from a subdirectory, silent too" "$(yes_if [ -z "$OUT" ])"
+
+mkrepo "$T"
+printf '#!/bin/sh\necho other tool\n' > "$T/.git/hooks/pre-commit"
+chmod +x "$T/.git/hooks/pre-commit"
+OUT=$(printf '{}' | env CLAUDE_PROJECT_DIR="$T" "$T/ci_scripts/hooks/install-git-hooks.sh" --claude); CODE=$?
+check "a hook in .git/hooks is left alone" "$(yes_if grep -q "other tool" "$T/.git/hooks/pre-commit")"
+check "  without setting core.hooksPath, which would turn it off" "$(yes_if [ -z "$(git -C "$T" config core.hooksPath)" ])"
+check "  reported to Claude as JSON" "$(yes_if sh -c 'printf "%s" "$1" | jq -e ".hookSpecificOutput.additionalContext | contains(\"stop running these hooks in .git/hooks: pre-commit\")" >/dev/null' _ "$OUT")"
+
+mkrepo "$T"
+git -C "$T" config core.hooksPath custom-hooks
+install
+expect "core.hooksPath set elsewhere is reported" 0 "core.hooksPath is custom-hooks"
+check "  and left as it is" "$(yes_if [ "$(git -C "$T" config core.hooksPath)" = custom-hooks -a ! -e "$T/.githooks" ])"
+mkdir -p "$T/custom-hooks"
+for name in pre-commit post-commit; do
+    printf '#!/bin/sh\necho other tool\n"$(git rev-parse --show-toplevel)/ci_scripts/hooks/%s.sh" || exit 1\n' "$name" > "$T/custom-hooks/$name"
+    chmod +x "$T/custom-hooks/$name"
+done
+install
+check "hooks there that call ours aren't reported" "$(yes_if [ -z "$OUT" ])"
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+commit "$T" -m chained;                                  expect "  and the chained call blocks a lint error" 1 "force_cast"
+
+mkrepo "$T"
+mkdir -p "$T/.githooks"
+printf '#!/bin/sh\necho mine\n' > "$T/.githooks/pre-commit"
+chmod +x "$T/.githooks/pre-commit"
+install
+expect "a .githooks hook of the project's own is reported" 0 ".githooks/pre-commit doesn't run the Swift checks"
+check "  and kept as it was" "$(yes_if sh -c 'grep -q mine "$1" && ! grep -q ci_scripts "$1"' _ "$T/.githooks/pre-commit")"
+check "  with post-commit created beside it" "$(yes_if [ -x "$T/.githooks/post-commit" ])"
+
+mkdir -p "$WORK/elsewhere"
+cp -R "$H" "$WORK/elsewhere/hooks"
+mkrepo "$T"
+OUT=$(cd "$T" && env -u CLAUDE_PROJECT_DIR "$WORK/elsewhere/hooks/install-git-hooks.sh"); CODE=$?
+expect "scripts outside the repository are reported" 0 "isn't inside this repository"
+check "  and nothing is set up" "$(yes_if [ ! -e "$T/.githooks" -a -z "$(git -C "$T" config core.hooksPath)" ])"
+
 # A project with its own copy of the scripts, as a submodule checkout has
 mkcopy() {
     mkrepo "$1"
@@ -102,39 +156,27 @@ mkcopy() {
     cp "$ROOT/.swiftlint.yml" "$1/ci_scripts/"
 }
 mkcopy "$T"
-C=$T/ci_scripts/hooks
-(cd "$T" && env -u CLAUDE_PROJECT_DIR "$C/install-git-hooks.sh" >/dev/null)
-ln -sf /old/clone/ci_scripts/hooks/pre-commit.sh "$T/.git/hooks/pre-commit"
-OUT=$(cd "$T" && env -u CLAUDE_PROJECT_DIR "$C/install-git-hooks.sh"); CODE=$?
-expect "a link from a moved clone is updated" 0 "Updated"
-check "  to this copy" "$(yes_if [ "$(readlink "$T/.git/hooks/pre-commit")" = "$C/pre-commit.sh" ])"
-rm "$T/.git/hooks/pre-commit"
-printf '#!/bin/sh
-echo other tool
-' > "$T/.git/hooks/pre-commit"
-chmod +x "$T/.git/hooks/pre-commit"
-OUT=$(printf '{}' | env CLAUDE_PROJECT_DIR="$T" "$C/install-git-hooks.sh" --claude); CODE=$?
-check "a foreign hook is left alone" "$(yes_if grep -q "other tool" "$T/.git/hooks/pre-commit")"
-check "  and reported to Claude as JSON" "$(yes_if sh -c 'printf "%s" "$1" | jq -e ".hookSpecificOutput.additionalContext | contains(\"left alone\")" >/dev/null' _ "$OUT")"
-check "  with the line to call ours from it" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "ci_scripts/hooks/pre-commit.sh"' _ "$OUT")"
-check "post-commit is still installed beside it" "$(yes_if [ -L "$T/.git/hooks/post-commit" ])"
-printf '#!/bin/sh\necho other tool\n"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" || exit 1\n' > "$T/.git/hooks/pre-commit"
-OUT=$(printf '{}' | env CLAUDE_PROJECT_DIR="$T" "$C/install-git-hooks.sh" --claude); CODE=$?
-check "a hook that already calls ours isn't reported" "$(yes_if [ -z "$OUT" ])"
+(cd "$T" && env -u CLAUDE_PROJECT_DIR ci_scripts/hooks/install-git-hooks.sh >/dev/null)
+git -C "$T" add -A
+commit "$T" -m setup
+git -C "$T" worktree add -q "$WORK/wt" -b wt 2>/dev/null
+printf '\necho "worktree copy ran"\n' >> "$WORK/wt/ci_scripts/hooks/pre-commit.sh"
+printf "$CLEAN" > "$WORK/wt/Clean.swift"
+git -C "$WORK/wt" add Clean.swift
+commit "$WORK/wt" -m clean;                              expect "a worktree runs its own copy of the checks" 0 "worktree copy ran"
+printf "$LINT_ERROR" > "$WORK/wt/Bad.swift"
+git -C "$WORK/wt" add Bad.swift
+commit "$WORK/wt" -m bad;                                expect "  and blocks a lint error there" 1 "force_cast"
+git -C "$T" worktree remove --force "$WORK/wt"
 printf "$LINT_ERROR" > "$T/Bad.swift"
 git -C "$T" add Bad.swift
-commit "$T" -m chained;                                  expect "  and the chained call blocks a lint error" 1 "force_cast"
-mkrepo "$T"
-git -C "$T" config core.hooksPath custom-hooks
-OUT=$(cd "$T" && env -u CLAUDE_PROJECT_DIR "$H/install-git-hooks.sh"); CODE=$?
-check "core.hooksPath is used" "$(yes_if [ -L "$T/custom-hooks/pre-commit" ])"
-mkrepo "$T"
-printf "$CLEAN" > "$T/Base.swift"
-git -C "$T" add Base.swift
-git -C "$T" commit -qm base
-git -C "$T" worktree add -q "$WORK/wt" -b wt 2>/dev/null
-OUT=$(cd "$WORK/wt" && env -u CLAUDE_PROJECT_DIR "$H/install-git-hooks.sh"); CODE=$?
-check "from a worktree, installs into the shared hooks" "$(yes_if [ -L "$T/.git/hooks/pre-commit" ])"
+commit "$T" -m bad;                                      expect "removing the worktree leaves the main checkout's checks working" 1 "force_cast"
+
+mkrepo "$T" hooks
+rm "$T/ci_scripts"
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift
+commit "$T" -m t;                                        expect "a missing ci_scripts blocks with a clear message" 1 "git submodule update --init"
 OUT=$(cd "$WORK" && env -u CLAUDE_PROJECT_DIR "$H/install-git-hooks.sh"); CODE=$?
 expect "outside a repository does nothing" 0
 
@@ -271,14 +313,98 @@ git -C "$T" checkout -q -
 OUT=$(env PATH="$NOBREW" git -C "$T" cherry-pick picked 2>&1); CODE=$?
 expect "cherry-pick of an unchecked lint error warns" 0 "wasn't checked"
 
+mkrepo "$T" hooks
+printf "$CLEAN" > "$T/Base.swift"
+git -C "$T" add Base.swift
+commit "$T" -m base
+git -C "$T" checkout -qb incoming
+printf "$UNFORMATTED" > "$T/Incoming.swift"
+git -C "$T" add Incoming.swift
+commit "$T" --no-verify -m incoming 2>/dev/null
+git -C "$T" checkout -q -
+git -C "$T" merge -q --no-ff --no-commit incoming >/dev/null 2>&1
+printf "$LINT_ERROR" > "$T/Resolved.swift"
+git -C "$T" add Resolved.swift
+commit "$T" --no-verify -m merge;                        expect "merge finished with --no-verify: a new lint error warns" 0 "wasn't checked"
+check "  names it" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "Resolved.swift.*force_cast"' _ "$OUT")"
+check "  but not the file brought in unchanged" "$(yes_if sh -c '! printf "%s" "$1" | grep -q "Incoming.swift"' _ "$OUT")"
+mkrepo "$T" hooks
+printf '{ this is not json\n' > "$T/.swift-format"
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift
+commit "$T" --no-verify -m t;                            expect "--no-verify with a malformed .swift-format warns" 0 "swift-format couldn't check Clean.swift"
+
+mkrepo "$T" hooks
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+commit "$T" --no-verify -m root;                         expect "first commit with --no-verify warns" 0 "wasn't checked"
+printf "$CLEAN" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+commit "$T" -m fixed
+printf "$LINT_ERROR" > "$T/Amended.swift"
+git -C "$T" add Amended.swift
+commit "$T" --amend --no-verify --no-edit;               expect "amend with --no-verify warns" 0 "Amended.swift"
+git -C "$T" checkout -qb topic
+printf "$LINT_ERROR" > "$T/Topic.swift"
+git -C "$T" add Topic.swift
+commit "$T" --no-verify -m topic 2>/dev/null
+git -C "$T" checkout -q -
+printf "$CLEAN" > "$T/Main.swift"
+git -C "$T" add Main.swift
+commit "$T" -m main
+git -C "$T" checkout -q topic
+OUT=$(env PATH="$NOBREW" git -C "$T" rebase -q - 2>&1); CODE=$?
+expect "rebase replays without warnings" 0
+check "  (no warning)" "$(yes_if sh -c '! printf "%s" "$1" | grep -q "wasn.t checked"' _ "$OUT")"
+git -C "$T" checkout -q -
+git -C "$T" merge -q --no-ff --no-commit topic >/dev/null 2>&1
+printf "$LINT_ERROR" > "$T/Resolved.swift"
+git -C "$T" add Resolved.swift
+commit "$T" -m merge;                                    expect "merge with a new lint error is blocked by pre-commit" 1 "Resolved.swift"
+check "  but not for the file brought in unchanged" "$(yes_if sh -c '! printf "%s" "$1" | grep -q "Topic.swift"' _ "$OUT")"
+git -C "$T" merge --abort
+
+rm -rf "$T"
+mkdir -p "$T"
+if git -C "$T" init -q --object-format=sha256 2>/dev/null; then
+    git -C "$T" config user.email test@example.com
+    git -C "$T" config user.name Test
+    git -C "$T" config commit.gpgsign false
+    printf '{ "version": 1, "indentation": { "spaces": 4 }, "lineLength": 1000 }\n' > "$T/.swift-format"
+    printf 'parent_config: ci_scripts/.swiftlint.yml\n' > "$T/.swiftlint.local.yml"
+    ln -s "$ROOT" "$T/ci_scripts"
+    (cd "$T" && ci_scripts/hooks/install-git-hooks.sh >/dev/null)
+    printf "$LINT_ERROR" > "$T/Bad.swift"
+    git -C "$T" add Bad.swift
+    commit "$T" --no-verify -m root;                     expect "SHA-256 repository: first commit with --no-verify warns" 0 "force_cast"
+    printf "$UNFORMATTED" > "$T/Sample.swift"
+    git -C "$T" add Sample.swift
+    commit "$T" -m sample;                               expect "SHA-256 repository: pre-commit formats" 0
+    check "  committed file formatted" "$(yes_if sh -c 'git -C "$1" show HEAD:Sample.swift | grep -q "^    let"' _ "$T")"
+fi
+
 echo "== pre-commit-lint.sh (compatibility shim)"
+# Run the shim as Claude Code does before a Bash command: shim <session id> [command]
+shim() {
+    OUT=$(jq -n --arg s "$1" --arg c "${2:-git commit -m x}" '{session_id: $s, tool_input: {command: $c}}' |
+        env CLAUDE_PROJECT_DIR="$T" /bin/bash "$T/ci_scripts/hooks/pre-commit-lint.sh" 2>&1); CODE=$?
+}
 mkrepo "$T"
+shim s1
+expect "allows the command" 0
+check "  and sets up the git hooks" "$(yes_if [ "$(git -C "$T" config core.hooksPath)" = .githooks -a -x "$T/.githooks/pre-commit" ])"
+check "  telling Claude what needs action, as PreToolUse context without a decision" "$(yes_if sh -c 'printf "%s" "$1" | jq -e ".hookSpecificOutput | .hookEventName == \"PreToolUse\" and (.additionalContext | contains(\"Commit .githooks\")) and .permissionDecision == null" >/dev/null' _ "$OUT")"
+shim s1
+check "  once per session" "$(yes_if [ -z "$OUT" ])"
+shim s2
+check "  and again in a new session" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "Commit .githooks"' _ "$OUT")"
+git -C "$T" add .githooks
+commit "$T" -m hooks
 for c in "git commit -m x" "rg 'git commit'" "ls"; do
-    OUT=$(jq -n --arg c "$c" --arg d "$T" '{tool_input: {command: $c}, cwd: $d}' |
-        env CLAUDE_PROJECT_DIR="$T" /bin/bash "$H/pre-commit-lint.sh" 2>&1); CODE=$?
+    shim s3 "$c"
     expect "allows: $c" 0
+    check "  quietly once set up" "$(yes_if [ -z "$OUT" ])"
 done
-check "and installs the git hooks" "$(yes_if [ -L "$T/.git/hooks/pre-commit" ])"
 
 echo "== post-edit-lint.sh"
 mkrepo "$T"

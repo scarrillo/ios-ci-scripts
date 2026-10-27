@@ -7,10 +7,11 @@
 # passed, this checks the commit's Swift files and warns. It can't undo the
 # commit; fix the files and commit again.
 #
-# Install with install-git-hooks.sh. Always exits 0: git ignores it anyway.
+# install-git-hooks.sh sets up .githooks/post-commit to run it. Always exits
+# 0: git ignores it anyway.
 #
 
-# Find this script's directory, following symlinks (.git/hooks/post-commit)
+# Find this script's directory, following symlinks
 source_path=${BASH_SOURCE[0]}
 while [ -L "$source_path" ]; do
     link_dir=$(cd -P "$(dirname "$source_path")" && pwd)
