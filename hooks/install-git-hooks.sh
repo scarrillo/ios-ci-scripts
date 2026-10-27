@@ -1,21 +1,20 @@
 #!/bin/bash
 #
-# install-git-hooks.sh - Set up the project's tracked git hooks in .githooks
+# install-git-hooks.sh - Install the git hooks that run the Swift checks
 #
 # Usage, from the project root:
 #   ci_scripts/hooks/install-git-hooks.sh            # report to the terminal
 #   ci_scripts/hooks/install-git-hooks.sh --quiet    # report only what needs action
 #   ci_scripts/hooks/install-git-hooks.sh --claude   # the same, as Claude Code JSON
 #
-# The project commits .githooks/pre-commit and .githooks/post-commit, which
-# run pre-commit.sh and post-commit.sh from the checkout making the commit,
-# so every clone and worktree uses its own copy of these scripts. This
-# creates those files when they're missing and sets core.hooksPath to
-# .githooks, which all worktrees share. Run it from a Claude Code SessionStart
-# hook so every session has them. It never replaces a hook: when
-# core.hooksPath points elsewhere, or .git/hooks has hooks that setting it
-# would turn off, it reports what to change instead. Safe to run again.
-# Always exits 0.
+# Writes a small pre-commit and post-commit hook into the repository's hooks
+# directory (.git/hooks, shared by all worktrees). Each runs pre-commit.sh or
+# post-commit.sh from the checkout making the commit, so every worktree uses
+# its own copy of these scripts. Git doesn't track .git/hooks, so checking out
+# a branch can't change what runs. Run it from a Claude Code SessionStart hook
+# so every session has them. It never replaces a hook: when one is already
+# there, or core.hooksPath points elsewhere, it reports how to call these
+# instead. Safe to run again. Always exits 0.
 #
 
 # These scripts' directory as it was called, before changing directories
@@ -65,7 +64,7 @@ while [ -n "$suffix" ]; do
     esac
 done
 if [ -z "$rel" ]; then
-    problems+="$script_dir isn't inside this repository ($root), so a tracked hook can't run the Swift checks from it. Add ci_scripts to the project, for example as a submodule, and run this from there."$'\n'
+    problems+="$script_dir isn't inside this repository ($root), so a hook can't run the Swift checks from the checkout making the commit. Add ci_scripts to the project, for example as a submodule, and run this from there."$'\n'
     report
 fi
 
@@ -74,44 +73,12 @@ call_line() {
     printf '"$(git rev-parse --show-toplevel)/%s/%s.sh" || exit 1' "$rel" "$1"
 }
 
-hooks_path=$(git config core.hooksPath)
-case "$hooks_path" in
-    "" | .githooks | .githooks/) ;;
-    *)
-        # Another hooks directory, such as a hook manager's: it must call these
-        dir=$(git rev-parse --git-path hooks)
-        for name in pre-commit post-commit; do
-            if ! grep -qF "$rel/$name.sh" "$dir/$name" 2>/dev/null; then
-                problems+="core.hooksPath is $hooks_path, so .githooks isn't used. To add the Swift checks, call this from $dir/$name: $(call_line "$name")"$'\n'
-            fi
-        done
-        report ;;
-esac
-
-if [ -z "$hooks_path" ]; then
-    # Setting core.hooksPath stops git from running the hooks in .git/hooks
-    default=$(git rev-parse --git-path hooks)
-    active=""
-    for hook in "$default"/*; do
-        case "$hook" in
-            *.sample) continue ;;
-        esac
-        if [ -f "$hook" ] && [ -x "$hook" ]; then
-            active+=" ${hook##*/}"
-        fi
-    done
-    if [ -n "$active" ]; then
-        problems+="core.hooksPath wasn't set to .githooks, because git would then stop running these hooks in $default:$active. Move them into .githooks (or call them from its hooks), remove them from $default, and run $rel/install-git-hooks.sh again."$'\n'
-        report
-    fi
-fi
-
-# A tracked hook that runs one of these scripts from the checkout committing
+# A hook that runs one of these scripts from the checkout making the commit
 write_hook() {
     cat <<EOF
 #!/bin/sh
 # Runs the shared Swift checks in $rel/$1.sh from the checkout making the
-# commit. Created by $rel/install-git-hooks.sh.
+# commit. Installed by $rel/install-git-hooks.sh.
 hook="\$(git rev-parse --show-toplevel)/$rel/$1.sh"
 if [ ! -f "\$hook" ]; then
     echo "error: \$hook is missing. Run: git submodule update --init" >&2
@@ -121,27 +88,29 @@ exec "\$hook" "\$@"
 EOF
 }
 
-mkdir -p .githooks || report
-untracked=""
+dir=$(git rev-parse --git-path hooks)
+hooks_path=$(git config core.hooksPath)
+if [ -n "$hooks_path" ]; then
+    # Another tool, such as a hook manager, owns the hooks: they must call these
+    for name in pre-commit post-commit; do
+        if ! grep -qF "$rel/$name.sh" "$dir/$name" 2>/dev/null; then
+            problems+="core.hooksPath is $hooks_path, so hooks run from $dir. To add the Swift checks, call this from $dir/$name: $(call_line "$name")"$'\n'
+        fi
+    done
+    report
+fi
+
+mkdir -p "$dir" || report
 for name in pre-commit post-commit; do
-    hook=.githooks/$name
+    hook=$dir/$name
     if [ ! -e "$hook" ] && [ ! -L "$hook" ]; then
         if write_hook "$name" > "$hook" && chmod +x "$hook"; then
-            notes+="Created $hook."$'\n'
+            notes+="Installed $hook."$'\n'
         fi
     elif ! grep -qF "$rel/$name.sh" "$hook" 2>/dev/null; then
-        problems+="$hook doesn't run the Swift checks. Add: $(call_line "$name")"$'\n'
+        problems+="$hook already exists and isn't this hook, so it was left alone. To add the Swift checks, call this from it: $(call_line "$name")"$'\n'
     elif [ ! -x "$hook" ]; then
         problems+="$hook isn't executable, so git skips it. Run: chmod +x $hook"$'\n'
     fi
-    if ! git ls-files --error-unmatch -- "$hook" >/dev/null 2>&1; then
-        untracked+=" $hook"
-    fi
 done
-if [ -n "$untracked" ]; then
-    problems+="Commit$untracked, so every clone and worktree runs the Swift checks."$'\n'
-fi
-if [ -z "$hooks_path" ] && git config core.hooksPath .githooks; then
-    notes+="Set core.hooksPath to .githooks."$'\n'
-fi
 report

@@ -7,8 +7,8 @@
 # passed, this checks the commit's Swift files and warns. It can't undo the
 # commit; fix the files and commit again.
 #
-# install-git-hooks.sh sets up .githooks/post-commit to run it. Always exits
-# 0: git ignores it anyway.
+# install-git-hooks.sh installs a .git/hooks/post-commit that runs it.
+# Always exits 0: git ignores it anyway.
 #
 
 # Find this script's directory, following symlinks

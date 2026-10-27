@@ -380,7 +380,7 @@ Firebase project with the app's bundle ID registered as an iOS app, the
 
 Shared git hooks and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) hooks that give consistent swift-format and SwiftLint checks across all projects using this submodule. They live in `hooks/`, and the checks are shared through `hooks/lib/swift-checks.sh`.
 
-Commits are checked by **git hooks**, not by predicting shell commands: git runs `pre-commit` after staging, in the real repository, with exactly what gets committed, for every client and every way of writing the command. The project commits two small hooks in `.githooks/` that run these scripts, and `core.hooksPath` points git at them. `install-git-hooks.sh` sets both up, and a Claude Code `SessionStart` hook runs it, so every Claude session has them.
+Commits are checked by **git hooks**, not by predicting shell commands: git runs `pre-commit` after staging, in the real repository, with exactly what gets committed, for every client and every way of writing the command. `install-git-hooks.sh` installs them, and a Claude Code `SessionStart` hook runs it, so every Claude session has them.
 
 ### hooks/pre-commit.sh
 
@@ -392,7 +392,7 @@ A git `post-commit` hook. Git skips `pre-commit` for `git commit --no-verify` (o
 
 ### hooks/install-git-hooks.sh
 
-Sets up the project's tracked hooks. `.githooks/pre-commit` and `.githooks/post-commit` each run the matching script from the checkout making the commit:
+Installs a small `pre-commit` and `post-commit` hook into the repository's hooks directory (`.git/hooks`, shared by all worktrees). Each runs the matching script from the checkout making the commit:
 
 ```sh
 #!/bin/sh
@@ -404,30 +404,25 @@ fi
 exec "$hook" "$@"
 ```
 
-The installer writes these when they're missing and sets `core.hooksPath` to `.githooks`. That setting is shared by every worktree, and its relative path points each worktree to its own `.githooks/`, so each clone and worktree runs its own copy of the checks, and removing a worktree can't break another.
+The hooks hold no paths to a particular checkout, so each clone and worktree runs its own copy of the checks, and removing a worktree can't break another. Git doesn't track `.git/hooks`, so checking out a branch can't change what runs on commit. The scripts it runs come from the `ci_scripts` submodule, which changes only through `git submodule update`. A project that keeps these scripts as ordinary tracked files instead of a submodule loses that protection.
 
 | Case | Behavior |
 |------|----------|
-| No `.githooks` hooks yet | Creates them, and asks for them to be committed |
-| `core.hooksPath` not set | Sets it to `.githooks` |
-| Already set up and committed | Nothing to do; safe to run again |
-| A `.githooks` hook that doesn't run these | **Left alone.** The report gives the line to add to it: `"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" \|\| exit 1` |
-| Hooks in `.git/hooks`, for example from Git LFS | **`core.hooksPath` isn't set**, because git would stop running them. The report says to move them into `.githooks/` (or call them from its hooks) and run it again |
-| `core.hooksPath` set to another directory, such as a hook manager's | **Left alone.** Nothing to do when that directory's hooks call these; otherwise the report gives the line to add |
-| These scripts outside the repository | Reported; nothing is set up |
+| No hook yet | Installs it |
+| Already installed | Nothing to do; safe to run again |
+| Another hook already there, for example from Git LFS | **Left alone.** The report gives the line to add to it: `"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" \|\| exit 1` |
+| An existing hook that already calls these | Nothing to do |
+| `core.hooksPath` set, for example by a hook manager | **Nothing is written.** Nothing to do when that directory's hooks call these; otherwise the report gives the line to add |
+| These scripts outside the repository | Reported; nothing is installed |
 | Outside a repository | Nothing to do |
 
-Run it once from the project root, then commit the hooks:
+Run it once from the project root to install the hooks for your own commits:
 
 ```bash
 ci_scripts/hooks/install-git-hooks.sh
-git add .githooks
-git commit -m "Add git hooks for the Swift checks"
 ```
 
-Each clone then needs `core.hooksPath` set once, by running it again or by the `SessionStart` hook below. A checkout without `ci_scripts`, such as a worktree whose submodule isn't initialized, can't commit until it runs `git submodule update --init`. A branch from before `.githooks/` was committed runs no hooks, because git skips hooks that aren't there.
-
-With `--quiet` it reports only what needs action, and with `--claude` it sends that as JSON that Claude reads. It always exits 0.
+A checkout without `ci_scripts`, such as a worktree whose submodule isn't initialized, can't commit until it runs `git submodule update --init`. With `--quiet` it reports only what needs action, and with `--claude` it sends that as JSON that Claude reads. It always exits 0.
 
 ### Commit checks
 
@@ -462,11 +457,11 @@ Standard-input linting of partly staged files doesn't apply the config's `exclud
 
 ### hooks/pre-commit-lint.sh
 
-A compatibility shim. It used to check commits by reading the Bash command before it ran, which can't be done reliably. Projects whose `.claude/settings.json` still runs it as a `PreToolUse` hook keep working: it runs `install-git-hooks.sh` and allows every command. When the setup needs action, such as `.githooks/` to commit or a hook it left alone, it tells Claude once per session. New setups use the `SessionStart` hook instead.
+A compatibility shim. It used to check commits by reading the Bash command before it ran, which can't be done reliably. Projects whose `.claude/settings.json` still runs it as a `PreToolUse` hook keep working: it runs `install-git-hooks.sh` and allows every command. When the setup needs action, such as a hook it left alone, it tells Claude once per session. New setups use the `SessionStart` hook instead.
 
 ### Hook Setup
 
-After committing `.githooks/` (see [install-git-hooks.sh](#hooksinstall-git-hookssh)), add the following to your project's `.claude/settings.json`:
+Add the following to your project's `.claude/settings.json`:
 
 ```json
 {
@@ -586,9 +581,6 @@ YourApp/
 │   └── ...
 ├── .claude/
 │   └── settings.json        # ← Hook paths point to ci_scripts/hooks/
-├── .githooks/                # ← Committed; run ci_scripts/hooks/ (install-git-hooks.sh)
-│   ├── post-commit
-│   └── pre-commit
 ├── ci_scripts/               # ← Submodule (this repo)
 │   ├── hooks/
 │   │   ├── lib/swift-checks.sh

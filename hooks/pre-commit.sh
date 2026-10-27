@@ -7,8 +7,8 @@
 # On success it records the staged tree, so post-commit.sh can tell this
 # commit was checked.
 #
-# install-git-hooks.sh sets up .githooks/pre-commit to run it. From another
-# hook or a hook manager (for example .husky/pre-commit), call:
+# install-git-hooks.sh installs a .git/hooks/pre-commit that runs it. From
+# another hook or a hook manager (for example .husky/pre-commit), call:
 #   "$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" || exit 1
 #
 # Exit code 0 = allow commit, Exit code 1 = block commit
