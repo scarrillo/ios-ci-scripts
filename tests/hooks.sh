@@ -1,16 +1,18 @@
 #!/bin/bash
 #
-# hooks.sh - Tests for hooks/pre-commit-lint.sh, hooks/pre-commit.sh, and
-# hooks/post-edit-lint.sh, run against throwaway repositories.
+# hooks.sh - Tests for the git hooks (pre-commit.sh, post-commit.sh), their
+# installer, the Claude Code shims, and post-edit-lint.sh, run against
+# throwaway repositories.
 #
 # Usage: tests/hooks.sh
 # Requires git, jq, swift-format (Xcode toolchain), and swiftlint. Runs with
 # the system bash (3.2 on macOS) like the hooks themselves.
 #
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 H=$ROOT/hooks
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ci-scripts-hook-tests.XXXXXX")
+WORK=$(cd -P "$WORK" && pwd)
 trap 'rm -rf "$WORK"' EXIT
 
 for tool in git jq swiftlint; do
@@ -28,7 +30,8 @@ pass=0
 fail=0
 
 # A repository with a .swift-format and a .swiftlint.local.yml that inherits
-# from ci_scripts/.swiftlint.yml, as a consuming project has
+# from ci_scripts/.swiftlint.yml, as a consuming project has. With
+# "hooks", the git hooks are installed.
 mkrepo() {
     rm -rf "$1"
     mkdir -p "$1"
@@ -39,11 +42,15 @@ mkrepo() {
     printf '{ "version": 1, "indentation": { "spaces": 4 }, "lineLength": 1000 }\n' > "$1/.swift-format"
     printf 'parent_config: ci_scripts/.swiftlint.yml\n' > "$1/.swiftlint.local.yml"
     ln -s "$ROOT" "$1/ci_scripts"
+    if [ "$2" = hooks ]; then
+        (cd "$1" && env -u CLAUDE_PROJECT_DIR ci_scripts/hooks/install-git-hooks.sh >/dev/null)
+    fi
 }
-# Run the Claude Code commit hook: pre <cwd> <command>; sets OUT and CODE
-pre() {
-    OUT=$(jq -n --arg c "$2" --arg d "$1" '{tool_input: {command: $c}, cwd: $d}' |
-        env PATH="$NOBREW" CLAUDE_PROJECT_DIR="$T" /bin/bash "$H/pre-commit-lint.sh" 2>&1)
+# Commit in repository $1 with git commit arguments $2...; sets OUT and CODE
+commit() {
+    local repo=$1
+    shift
+    OUT=$(env PATH="$NOBREW" git -C "$repo" commit -q "$@" 2>&1)
     CODE=$?
 }
 # Run the edit hook: post <file>; sets OUT and CODE
@@ -71,239 +78,346 @@ expect() {  # name, expected exit code, optional text the output must contain
     check "$1 (exit $CODE)" $result
 }
 yes_if() { if "$@"; then echo 0; else echo 1; fi; }
+committed() { git -C "$1" show "HEAD:$2" 2>/dev/null; }
 
 T=$WORK/main
 O=$WORK/other
 
-echo "== Claude hook: which commands count as commits"
+echo "== install-git-hooks.sh"
+# Run the installer the way a project does, from its ci_scripts: install [args]; sets OUT and CODE
+install() {
+    OUT=$(cd "$T" && env -u CLAUDE_PROJECT_DIR ci_scripts/hooks/install-git-hooks.sh "$@" < /dev/null); CODE=$?
+}
 mkrepo "$T"
-printf "$UNFORMATTED" > "$T/Sample.swift"
-git -C "$T" add Sample.swift
-staged=$(git -C "$T" rev-parse :Sample.swift)
-pre "$T" "rg -n 'git commit' readme.md";                 expect "rg 'git commit' is ignored" 0
-pre "$T" 'echo "x && git commit -m y"';                  expect "quoted && git commit is ignored" 0
-pre "$T" "rg 'git commit \$(x)' f";                      expect "single quotes stay text" 0
-check "index untouched by ignored commands" "$(yes_if [ "$staged" = "$(git -C "$T" rev-parse :Sample.swift)" ])"
-pre "$T" "git status && git commit -m t";                expect "status then commit is checked" 0 "SwiftLint passed"
-check "staged file formatted" "$(yes_if [ "$staged" != "$(git -C "$T" rev-parse :Sample.swift)" ])"
-pre "$T" "FOO=1 /usr/bin/git --no-pager commit -m t";    expect "assignment, full path, global option" 0 "SwiftLint passed"
-pre "$T" 'git commit -m "Fix -a flag handling"';         expect "message containing -a" 0 "SwiftLint passed"
-pre "$T" "git commit -ma";                               expect "-ma is -m a" 0 "SwiftLint passed"
-pre "$T" "git commit --author 'A B <a@b>' -m t 2>&1";    expect "--author value and redirection" 0 "SwiftLint passed"
-pre "$T" "git commit -q -F - <<'EOF'
-Subject
-
-Mentions \`git commit\` and \$(git add x); git commit -a
-EOF"
-expect "heredoc message with git commands in it" 0 "SwiftLint passed"
-pre "$T" "git commit -m \"\$(cat <<'EOF'
-Subject; with & and | and (parens)
-EOF
-)\""
-expect "\$(cat <<EOF) message" 0 "SwiftLint passed"
+install
+expect "fresh install writes both hooks" 0 "Installed .git/hooks/pre-commit."
+check "  both executable" "$(yes_if [ -x "$T/.git/hooks/pre-commit" -a -x "$T/.git/hooks/post-commit" ])"
+check "  running the scripts by their path in the project" "$(yes_if grep -qF '/ci_scripts/hooks/pre-commit.sh"' "$T/.git/hooks/pre-commit")"
+check "  without core.hooksPath or tracked files" "$(yes_if [ -z "$(git -C "$T" config core.hooksPath)" -a -z "$(git -C "$T" status --porcelain --untracked-files=all -- .githooks)" ])"
+install
+check "running again is silent" "$(yes_if [ -z "$OUT" ])"
+OUT=$(printf '{"source":"startup"}' | env CLAUDE_PROJECT_DIR="$T" "$T/ci_scripts/hooks/install-git-hooks.sh" --claude); CODE=$?
+check "--claude with nothing to report prints nothing" "$(yes_if [ -z "$OUT" ])"
+mkdir -p "$T/sub"
+OUT=$(cd "$T/sub" && env -u CLAUDE_PROJECT_DIR ../ci_scripts/hooks/install-git-hooks.sh); CODE=$?
+check "from a subdirectory, silent too" "$(yes_if [ -z "$OUT" ])"
+mkdir -p "$T/.githooks"
+printf '#!/bin/sh\necho "branch hook ran"\n' > "$T/.githooks/pre-commit"
+chmod +x "$T/.githooks/pre-commit"
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift .githooks
+commit "$T" -m branch;                                   expect "a hook file committed in a branch doesn't run" 0
+check "  (not run)" "$(yes_if sh -c '! printf "%s" "$1" | grep -q "branch hook ran"' _ "$OUT")"
 
 mkrepo "$T"
+printf '#!/bin/sh\necho other tool\n' > "$T/.git/hooks/pre-commit"
+chmod +x "$T/.git/hooks/pre-commit"
+OUT=$(printf '{}' | env CLAUDE_PROJECT_DIR="$T" "$T/ci_scripts/hooks/install-git-hooks.sh" --claude); CODE=$?
+check "a foreign hook is left alone" "$(yes_if grep -q "other tool" "$T/.git/hooks/pre-commit")"
+check "  and reported to Claude as JSON" "$(yes_if sh -c 'printf "%s" "$1" | jq -e ".hookSpecificOutput.additionalContext | contains(\"left alone\")" >/dev/null' _ "$OUT")"
+check "  with the line to call ours from it" "$(yes_if sh -c 'printf "%s" "$1" | grep -qF "/ci_scripts/hooks/pre-commit.sh\\\" || exit 1"' _ "$OUT")"
+check "post-commit is still installed beside it" "$(yes_if [ -x "$T/.git/hooks/post-commit" ])"
+printf '#!/bin/sh\necho other tool\n"$(git rev-parse --show-toplevel)/ci_scripts/hooks/pre-commit.sh" || exit 1\n' > "$T/.git/hooks/pre-commit"
+install
+check "a hook that already calls ours isn't reported" "$(yes_if [ -z "$OUT" ])"
 printf "$LINT_ERROR" > "$T/Bad.swift"
 git -C "$T" add Bad.swift
-pre "$T" 'result="$(git commit -m message)"';            expect "commit in quoted \$()" 2 "force_cast"
-pre "$T" 'echo `git commit -m message`';                 expect "commit in backticks" 2 "force_cast"
-pre "$T" 'echo "x `git commit -m m` y"';                 expect "backticks inside double quotes" 2 "force_cast"
-pre "$T" "if true; then git commit -m test; fi";         expect "commit after then" 2 "force_cast"
-pre "$T" "true || { git commit -m t; }";                 expect "commit in braces" 2 "force_cast"
-pre "$T" "env FOO=1 git commit -m t";                    expect "env with an assignment" 2 "force_cast"
+commit "$T" -m chained;                                  expect "  and the chained call blocks a lint error" 1 "force_cast"
 
-echo "== Claude hook: forms it blocks"
-mkrepo "$O"
-printf "$CLEAN" > "$O/Clean.swift"
-git -C "$O" add Clean.swift
-pre "$O" "git add Clean.swift && git commit -m t";       expect "add && commit" 2 "git add first"
-pre "$O" "git rm -q x
-git commit -m t";                                        expect "rm, newline, commit" 2 "git rm first"
-pre "$O" "git cherry-pick -n abc123 && git commit -m t"; expect "cherry-pick -n && commit" 2 "git cherry-pick first"
-pre "$O" "(git add x) && git commit -m t";               expect "add in a subshell" 2 "git add first"
-pre "$O" "git fetch && git status && git commit -m t";   expect "read-only git commands before commit" 0 "SwiftLint passed"
-pre "$O" "git commit -am t";                             expect "-am" 2 "aren't staged"
-pre "$O" "git commit --all -m t";                        expect "--all" 2 "aren't staged"
-pre "$O" "git commit Clean.swift -m t";                  expect "path" 2 "aren't staged"
-pre "$O" "git commit -m t -- Clean.swift";               expect "-- path" 2 "aren't staged"
-pre "$O" "git commit >commit.log -am message";           expect "redirection before -am" 2 "aren't staged"
-pre "$O" "git commit -m x 2>&1 -a";                      expect "2>&1 then -a" 2 "aren't staged"
-pre "$O" "git commit > commit.log -m x";                 expect "spaced redirection target" 0 "SwiftLint passed"
-printf 'x\n' > "$O/>Clean.swift"
-pre "$O" "git commit '>Clean.swift' -m test";            expect "quoted '>path' is a path" 2 "aren't staged"
-rm -f "$O/>Clean.swift" "$O/commit.log"
-pre "$O" "git --git-dir=$T/.git --work-tree=$T commit -m t"; expect "--git-dir" 2 "can't follow"
-pre "$O" "GIT_INDEX_FILE=/tmp/x git commit -m t";        expect "GIT_INDEX_FILE" 2 "can't follow"
-pre "$O" "export GIT_DIR=$T/.git; git commit -m t";      expect "export GIT_DIR" 2 "can't follow"
-pre "$O" "env -u UNUSED git commit -m test";             expect "wrapper with options" 2 "env with options"
-pre "$O" "git commit -m first && git add x && git commit -m second"; expect "two commits" 2 "2 times"
-pre "$O" "git commit -m one && git push";                expect "commit then push" 0 "SwiftLint passed"
-
-echo "== Claude hook: the repository the commit runs in"
-pre "$O" "git -C $T commit -m t";                        expect "git -C" 2 "force_cast"
-pre "$O" "cd $T && git commit -m t";                     expect "cd &&" 2 "force_cast"
-pre "$T" "git commit -m t";                              expect "cwd" 2 "force_cast"
-pre "$T" "(cd $O && true); git commit -m t";             expect "cd in a subshell doesn't leak" 2 "force_cast"
-pre "$O" "(cd $T && git commit -m t)";                   expect "cd inside the same subshell" 2 "force_cast"
-pre "" "git commit -m t";                                expect "empty cwd falls back to CLAUDE_PROJECT_DIR" 2 "force_cast"
-git -C "$O" commit -qm base
-W=$WORK/worktree
-git -C "$O" worktree add -q "$W" -b wt 2>/dev/null
-printf "$LINT_ERROR" > "$W/WorktreeBad.swift"
-git -C "$W" add WorktreeBad.swift
-pre "$W" "git commit -m t";                              expect "worktree checked against its own index" 2 "force_cast"
-pre "$O" "git commit -m t";                              expect "main checkout unaffected by the worktree" 0 "No Swift files staged"
-
-echo "== Shared checks"
 mkrepo "$T"
+git -C "$T" config core.hooksPath custom-hooks
+install
+expect "core.hooksPath set elsewhere is reported" 0 "core.hooksPath is custom-hooks"
+check "  and nothing is written there" "$(yes_if [ ! -e "$T/custom-hooks/pre-commit" -a ! -e "$T/.git/hooks/pre-commit" ])"
+mkdir -p "$T/custom-hooks"
+for name in pre-commit post-commit; do
+    printf '#!/bin/sh\n"$(git rev-parse --show-toplevel)/ci_scripts/hooks/%s.sh" || exit 1\n' "$name" > "$T/custom-hooks/$name"
+    chmod +x "$T/custom-hooks/$name"
+done
+install
+check "hooks there that call ours aren't reported" "$(yes_if [ -z "$OUT" ])"
+
+mkdir -p "$WORK/elsewhere"
+cp -R "$H" "$WORK/elsewhere/hooks"
+mkrepo "$T"
+OUT=$(cd "$T" && env -u CLAUDE_PROJECT_DIR "$WORK/elsewhere/hooks/install-git-hooks.sh"); CODE=$?
+expect "scripts outside the repository are reported" 0 "isn't inside this repository"
+check "  and nothing is installed" "$(yes_if [ ! -e "$T/.git/hooks/pre-commit" ])"
+
+# A project with its own copy of the scripts, as a submodule checkout has
+mkcopy() {
+    mkrepo "$1"
+    rm "$1/ci_scripts"
+    mkdir -p "$1/ci_scripts"
+    cp -R "$H" "$1/ci_scripts/hooks"
+    cp "$ROOT/.swiftlint.yml" "$1/ci_scripts/"
+}
+mkcopy "$T"
+git -C "$T" add -A
+git -C "$T" commit -qm setup
+git -C "$T" worktree add -q "$WORK/wt" -b wt 2>/dev/null
+OUT=$(cd "$WORK/wt" && env -u CLAUDE_PROJECT_DIR ci_scripts/hooks/install-git-hooks.sh); CODE=$?
+check "from a worktree, installs into the shared hooks" "$(yes_if [ -x "$T/.git/hooks/pre-commit" ])"
+printf '\necho "worktree copy ran"\n' >> "$WORK/wt/ci_scripts/hooks/pre-commit.sh"
+printf "$CLEAN" > "$WORK/wt/Clean.swift"
+git -C "$WORK/wt" add Clean.swift
+commit "$WORK/wt" -m clean;                              expect "a worktree runs its own copy of the checks" 0 "worktree copy ran"
+printf "$LINT_ERROR" > "$WORK/wt/Bad.swift"
+git -C "$WORK/wt" add Bad.swift
+commit "$WORK/wt" -m bad;                                expect "  and blocks a lint error there" 1 "force_cast"
+git -C "$T" worktree remove --force "$WORK/wt"
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+commit "$T" -m bad;                                      expect "removing the worktree leaves the main checkout's checks working" 1 "force_cast"
+check "  (its own copy, not the worktree's)" "$(yes_if sh -c '! printf "%s" "$1" | grep -q "worktree copy ran"' _ "$OUT")"
+
+mkrepo "$T" hooks
+rm "$T/ci_scripts"
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift
+commit "$T" -m t;                                        expect "a missing ci_scripts blocks with a clear message" 1 "git submodule update --init"
+OUT=$(cd "$WORK" && env -u CLAUDE_PROJECT_DIR "$H/install-git-hooks.sh"); CODE=$?
+expect "outside a repository does nothing" 0
+
+echo "== pre-commit.sh (git pre-commit hook)"
+mkrepo "$T" hooks
+printf "$UNFORMATTED" > "$T/Sample.swift"
+git -C "$T" add Sample.swift
+commit "$T" -m sample;                                   expect "clean commit allowed" 0
+check "committed file formatted" "$(yes_if sh -c 'git -C "$1" show HEAD:Sample.swift | grep -q "^    let"' _ "$T")"
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+commit "$T" -m bad;                                      expect "lint error blocks" 1 "force_cast"
+git -C "$T" rm -q --cached Bad.swift
+rm "$T/Bad.swift"
+printf "$UNFORMATTED" > "$T/Sample.swift"
+printf '// edit\n' >> "$T/Sample.swift"
+commit "$T" -am edit;                                    expect "commit -a allowed" 0
+check "commit -a formatted" "$(yes_if sh -c 'git -C "$1" show HEAD:Sample.swift | grep -q "^    let"' _ "$T")"
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+commit "$T" -m path;                                     expect "lint error staged by git add blocks" 1 "force_cast"
+git -C "$T" rm -q --cached Bad.swift
+rm "$T/Bad.swift"
+
+mkrepo "$T" hooks
 printf "$LINT_ERROR" > "$T/Partial.swift"
 git -C "$T" add Partial.swift
 printf "$CLEAN" > "$T/Partial.swift"
-pre "$T" "git commit -m t";                              expect "partly staged: staged error blocks" 2 "Partial.swift (staged)"
-mkrepo "$T"
+commit "$T" -m t;                                        expect "partly staged: staged error blocks" 1 "Partial.swift (staged)"
+mkrepo "$T" hooks
 printf "$CLEAN" > "$T/Partial.swift"
 git -C "$T" add Partial.swift
 printf "$LINT_ERROR" > "$T/Partial.swift"
-before=$(git -C "$T" rev-parse :Partial.swift)
-pre "$T" "git commit -m t";                              expect "partly staged: unstaged error passes" 0 "not auto-formatted"
-check "partly staged: index untouched" "$(yes_if [ "$before" = "$(git -C "$T" rev-parse :Partial.swift)" ])"
-check "partly staged: warning sent to Claude as JSON" "$(yes_if sh -c 'printf "%s" "$1" | grep -q additionalContext' _ "$OUT")"
+commit "$T" -m t;                                        expect "partly staged: unstaged error passes" 0
+check "partly staged: only the staged content is committed" "$(yes_if [ "$(committed "$T" Partial.swift)" = "let value = 1" ])"
+check "partly staged: working copy untouched" "$(yes_if grep -q 'as! Int' "$T/Partial.swift")"
 
-mkrepo "$T"
-for f in "My File.swift" "Café.swift" "a[b].swift" "-dash.swift"; do printf "$UNFORMATTED" > "$T/$f"; done
+mkrepo "$T" hooks
+for f in "My File.swift" "Café.swift" "a[b].swift" "-dash.swift" "$(printf 'Tab\tName.swift')"; do printf "$UNFORMATTED" > "$T/$f"; done
 printf 'x\n' > "$T/ab.swift"
-git -C "$T" add -- "My File.swift" "Café.swift" ":(literal)a[b].swift" "-dash.swift"
-pre "$T" "git commit -m t";                              expect "names with spaces, accents, brackets, a leading dash" 0 "SwiftLint passed"
-formatted=$(for f in "My File.swift" "Café.swift" "a[b].swift" "-dash.swift"; do git -C "$T" show ":$f" | grep -c '^    let'; done | tr -d '\n')
-check "all four formatted" "$(yes_if [ "$formatted" = 1111 ])"
-check "ab.swift left unstaged" "$(yes_if sh -c '! git -C "$1" diff --cached --name-only | grep -qx ab.swift' _ "$T")"
+git -C "$T" add -- "My File.swift" "Café.swift" ":(literal)a[b].swift" "-dash.swift" "$(printf ':(literal)Tab\tName.swift')"
+commit "$T" -m names;                                    expect "unusual names allowed" 0
+formatted=$(for f in "My File.swift" "Café.swift" "a[b].swift" "-dash.swift" "$(printf 'Tab\tName.swift')"; do committed "$T" "$f" | grep -c '^    let'; done | tr -d '\n')
+check "unusual names formatted" "$(yes_if [ "$formatted" = 11111 ])"
+check "ab.swift left out" "$(yes_if sh -c '! git -C "$1" ls-files --error-unmatch ab.swift >/dev/null 2>&1' _ "$T")"
 
-mkrepo "$T"
+mkrepo "$T" hooks
 printf "$CLEAN" > "$T/Old.swift"
 git -C "$T" add Old.swift
-git -C "$T" commit -qm base
+commit "$T" -m base
 git -C "$T" mv Old.swift New.swift
 printf "$LINT_ERROR" >> "$T/New.swift"
 git -C "$T" add New.swift
-pre "$T" "git commit -m t";                              expect "renamed and edited file is linted" 2 "force_cast"
+commit "$T" -m rename;                                   expect "renamed and edited file is linted" 1 "force_cast"
 
-mkrepo "$T"
+mkrepo "$T" hooks
 mkdir -p "$WORK/outside"
 printf "$UNFORMATTED" > "$WORK/outside/Target.swift"
 ln -s "$WORK/outside/Target.swift" "$T/Link.swift"
 git -C "$T" add Link.swift
-pre "$T" "git commit -m t";                              expect "symlinked Swift file skipped" 0 "is a symlink"
-check "symlink target outside the repo untouched" "$(yes_if grep -q '^  let' "$WORK/outside/Target.swift")"
+commit "$T" -m link;                                     expect "symlinked Swift file skipped" 0 "is a symlink"
+check "symlink target untouched" "$(yes_if grep -q '^  let' "$WORK/outside/Target.swift")"
 
-mkrepo "$T"
-rm "$T/ci_scripts"
-printf "$CLEAN" > "$T/Clean.swift"
-git -C "$T" add Clean.swift
-pre "$T" "git commit -m t";                              expect "missing parent config blocks" 2 "which is missing"
-
-mkrepo "$T"
-printf "$CLEAN" > "$T/Base.swift"
-git -C "$T" add Base.swift
-git -C "$T" commit -qm base
-git -C "$T" checkout -qb incoming
-printf "$UNFORMATTED" > "$T/Incoming.swift"
-git -C "$T" add Incoming.swift
-git -C "$T" commit -qm incoming
-git -C "$T" checkout -q -
-git -C "$T" merge -q --no-ff --no-commit incoming >/dev/null 2>&1
-pre "$T" "git commit -m merge";                          expect "merge: file brought in unchanged is skipped" 0 "No Swift files staged"
-check "merge: incoming file left as merged" "$(yes_if sh -c 'git -C "$1" show :Incoming.swift | grep -q "^  let"' _ "$T")"
-git -C "$T" merge --abort
-
-PATH_X86="$WORK/x86bin:$NOBREW:/opt/homebrew/bin"
-mkdir -p "$WORK/x86bin"
-printf '#!/bin/sh\necho "swiftlint: Bad CPU type in executable" >&2\nexit 126\n' > "$WORK/x86bin/swiftlint"
-chmod +x "$WORK/x86bin/swiftlint"
-mkrepo "$T"
-printf "$CLEAN" > "$T/Clean.swift"
-git -C "$T" add Clean.swift
-OUT=$(jq -n --arg c "git commit -m t" --arg d "$T" '{tool_input: {command: $c}, cwd: $d}' |
-    env PATH="$PATH_X86" CLAUDE_PROJECT_DIR="$T" /bin/bash "$H/pre-commit-lint.sh" 2>&1)
-CODE=$?
-expect "swiftlint that can't run blocks with a clear message" 2 "can't run"
-
-
-echo "== Claude hook: pipelines, comments, functions, wrappers, options"
-mkrepo "$T"
-printf "$LINT_ERROR" > "$T/Bad.swift"
-git -C "$T" add Bad.swift
-mkrepo "$O"
-printf "$CLEAN" > "$O/Clean.swift"
-git -C "$O" add Clean.swift
-pre "$O" "cd $T | cat; git commit -m t";                  expect "cd in a pipeline doesn't leak" 0 "SwiftLint passed"
-pre "$O" "git status | cd $T; git commit -m t";           expect "cd at the end of a pipeline doesn't leak" 0 "SwiftLint passed"
-pre "$O" "cd $T || true; git commit -m t";                expect "cd before || still applies" 2 "force_cast"
-pre "$O" "git status |& cat; git commit -m t";            expect "|& pipeline" 0 "SwiftLint passed"
-pre "$O" "cd $T & wait; git commit -m t";                 expect "cd in a background command doesn't leak" 0 "SwiftLint passed"
-pre "$O" "sleep 0 & cd $T && git commit -m t";            expect "cd after a background command applies" 2 "force_cast"
-pre "$O" "cd $T # stay here; cd /tmp
-git commit -m t";                                          expect "comment text isn't run" 2 "force_cast"
-pre "$O" "git commit -m t # -a";                          expect "flag in a comment is ignored" 0 "SwiftLint passed"
-pre "$O" "echo a#b; git commit -m t";                     expect "# inside a word isn't a comment" 0 "SwiftLint passed"
-pre "$T" "function do_commit { git commit -m x; }; do_commit"; expect "commit inside a function keyword definition" 2 "force_cast"
-pre "$T" "do_commit() { git commit -m x; }; do_commit";   expect "commit inside a name() definition" 2 "force_cast"
-pre "$T" "/usr/bin/env git commit -m x";                  expect "path-qualified env" 2 "force_cast"
-pre "$T" "/usr/bin/env -i git commit -m x";               expect "path-qualified env with options" 2 "env with options"
-pre "$T" "timeout 60 git commit -m x";                    expect "timeout takes arguments" 2 "timeout with options"
-pre "$T" "printf x | xargs git commit -m";                expect "xargs runs commands it reads" 2 "xargs with options"
-pre "$O" "git commit --pathspec-from-fi=paths -m x";      expect "abbreviated --pathspec-from-file" 2 "aren't staged"
-pre "$O" "git commit --al -m x";                          expect "abbreviated --all" 2 "aren't staged"
-pre "$O" "git commit --mess 'two words'";                 expect "abbreviated --message takes a value" 0 "SwiftLint passed"
-pre "$O" "git commit --untracked-files=no -m x";          expect "--untracked-files=no" 0 "SwiftLint passed"
-pre "$O" "git commit -uno -m t";                          expect "-uno is -u no, not -o" 0 "SwiftLint passed"
-pre "$O" "git commit -Skey -m t";                         expect "-S with an attached key" 0 "SwiftLint passed"
-
-echo "== Shared checks: format failures, symlinked working copies, unusual names"
-mkrepo "$T"
-printf '{ this is not json\n' > "$T/.swift-format"
-printf "$CLEAN" > "$T/Clean.swift"
-git -C "$T" add Clean.swift
-pre "$T" "git commit -m t";                                expect "malformed .swift-format blocks" 2 "swift-format couldn't format"
-mkrepo "$T"
+mkrepo "$T" hooks
 printf "$LINT_ERROR" > "$T/Bad.swift"
 git -C "$T" add Bad.swift
 printf "$CLEAN" > "$WORK/outside/Clean.swift"
 rm "$T/Bad.swift"
 ln -s "$WORK/outside/Clean.swift" "$T/Bad.swift"
-pre "$T" "git commit -m t";                                expect "staged file with a symlinked working copy is linted" 2 "Bad.swift (staged)"
-mkrepo "$T"
-for f in "$(printf 'Tab\tName.swift')" 'Quote"Name.swift' 'Back\slash.swift' "$(printf 'New\nLine.swift')"; do
-    printf "$LINT_ERROR" > "$T/$f"
-    git -C "$T" add -- ":(literal)$f"
-done
-pre "$T" "git commit -m t"
-count=$(printf '%s' "$OUT" | grep -c 'force_cast')
-check "tab, quote, backslash, and newline names are linted ($count)" "$(yes_if [ "$count" -ge 4 ])"
+commit "$T" -m t;                                        expect "staged file with a symlinked working copy is linted" 1 "Bad.swift (staged)"
 
-echo "== git pre-commit hook"
-mkrepo "$T"
-ln -s "$H/pre-commit.sh" "$T/.git/hooks/pre-commit"
+mkrepo "$T" hooks
+rm "$T/ci_scripts"
+mkdir -p "$T/ci_scripts"
+ln -s "$H" "$T/ci_scripts/hooks"
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift
+commit "$T" -m t;                                        expect "missing parent config blocks" 1 "which is missing"
+
+mkrepo "$T" hooks
+printf '{ this is not json\n' > "$T/.swift-format"
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift
+commit "$T" -m t;                                        expect "malformed .swift-format blocks" 1 "swift-format couldn't format"
+
+mkrepo "$T" hooks
+printf "$CLEAN" > "$T/Base.swift"
+git -C "$T" add Base.swift
+commit "$T" -m base
+git -C "$T" checkout -qb incoming
+printf "$UNFORMATTED" > "$T/Incoming.swift"
+git -C "$T" add Incoming.swift
+commit "$T" --no-verify -m incoming 2>/dev/null
+git -C "$T" checkout -q -
+git -C "$T" merge -q --no-ff --no-commit incoming >/dev/null 2>&1
+commit "$T" -m merge;                                    expect "merge: file brought in unchanged is skipped" 0
+check "merge: incoming file left as merged" "$(yes_if sh -c 'git -C "$1" show HEAD:Incoming.swift | grep -q "^  let"' _ "$T")"
+
+mkdir -p "$WORK/x86bin"
+printf '#!/bin/sh\necho "swiftlint: Bad CPU type in executable" >&2\nexit 126\n' > "$WORK/x86bin/swiftlint"
+chmod +x "$WORK/x86bin/swiftlint"
+mkrepo "$T" hooks
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift
+OUT=$(env PATH="$WORK/x86bin:$NOBREW:/opt/homebrew/bin" git -C "$T" commit -qm t 2>&1); CODE=$?
+expect "swiftlint that can't run blocks with a clear message" 1 "can't run"
+
+echo "== post-commit.sh (catches commits pre-commit.sh didn't check)"
+mkrepo "$T" hooks
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift
+commit "$T" -m clean;                                    expect "a checked commit is allowed" 0
+check "  with no post-commit warning" "$(yes_if sh -c '! printf "%s" "$1" | grep -q "wasn.t checked"' _ "$OUT")"
 printf "$LINT_ERROR" > "$T/Bad.swift"
 git -C "$T" add Bad.swift
-OUT=$(env PATH="$NOBREW" git -C "$T" commit -qm bad 2>&1)
-CODE=$?
-expect "git hook blocks a lint error" 1 "force_cast"
-git -C "$T" rm -q --cached Bad.swift
-rm "$T/Bad.swift"
-printf "$UNFORMATTED" > "$T/Sample.swift"
-git -C "$T" add Sample.swift
-OUT=$(env PATH="$NOBREW" git -C "$T" commit -qm sample 2>&1)
-CODE=$?
-expect "git hook allows a clean commit" 0
-check "git hook formatted the committed file" "$(yes_if sh -c 'git -C "$1" show HEAD:Sample.swift | grep -q "^    let"' _ "$T")"
-printf "$UNFORMATTED" > "$T/Sample.swift"
-printf '// edit\n' >> "$T/Sample.swift"
-OUT=$(env PATH="$NOBREW" git -C "$T" commit -qam edit 2>&1)
-CODE=$?
-expect "git hook with commit -a" 0
-check "git hook formatted the -a commit" "$(yes_if sh -c 'git -C "$1" show HEAD:Sample.swift | grep -q "^    let"' _ "$T")"
+commit "$T" --no-verify -m bypass;                       expect "--no-verify with a lint error: commit made, warning shown" 0 "wasn't checked"
+check "  names the lint error" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "Bad.swift.*force_cast"' _ "$OUT")"
+printf "$UNFORMATTED" > "$T/Unformatted.swift"
+git -C "$T" add Unformatted.swift
+commit "$T" -n -m bypass2;                               expect "-n with an unformatted file warns" 0 "Indentation"
+printf "$CLEAN" > "$T/Clean2.swift"
+git -C "$T" add Clean2.swift
+commit "$T" --no-verify -m bypass3;                      expect "--no-verify with clean files prints nothing" 0
+check "  (no warning)" "$(yes_if [ -z "$OUT" ])"
+printf 'notes\n' > "$T/notes.txt"
+git -C "$T" add notes.txt
+commit "$T" --no-verify -m notes;                        expect "--no-verify without Swift files prints nothing" 0
+check "  (no warning)" "$(yes_if [ -z "$OUT" ])"
+git -C "$T" checkout -qb picked
+printf "$LINT_ERROR" > "$T/Picked.swift"
+git -C "$T" add Picked.swift
+commit "$T" --no-verify -m picked 2>/dev/null
+git -C "$T" checkout -q -
+OUT=$(env PATH="$NOBREW" git -C "$T" cherry-pick picked 2>&1); CODE=$?
+expect "cherry-pick of an unchecked lint error warns" 0 "wasn't checked"
 
-echo "== edit hook"
+mkrepo "$T" hooks
+printf "$CLEAN" > "$T/Base.swift"
+git -C "$T" add Base.swift
+commit "$T" -m base
+git -C "$T" checkout -qb incoming
+printf "$UNFORMATTED" > "$T/Incoming.swift"
+git -C "$T" add Incoming.swift
+commit "$T" --no-verify -m incoming 2>/dev/null
+git -C "$T" checkout -q -
+git -C "$T" merge -q --no-ff --no-commit incoming >/dev/null 2>&1
+printf "$LINT_ERROR" > "$T/Resolved.swift"
+git -C "$T" add Resolved.swift
+commit "$T" --no-verify -m merge;                        expect "merge finished with --no-verify: a new lint error warns" 0 "wasn't checked"
+check "  names it" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "Resolved.swift.*force_cast"' _ "$OUT")"
+check "  but not the file brought in unchanged" "$(yes_if sh -c '! printf "%s" "$1" | grep -q "Incoming.swift"' _ "$OUT")"
+mkrepo "$T" hooks
+printf '{ this is not json\n' > "$T/.swift-format"
+printf "$CLEAN" > "$T/Clean.swift"
+git -C "$T" add Clean.swift
+commit "$T" --no-verify -m t;                            expect "--no-verify with a malformed .swift-format warns" 0 "swift-format couldn't check Clean.swift"
+
+mkrepo "$T" hooks
+printf "$LINT_ERROR" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+commit "$T" --no-verify -m root;                         expect "first commit with --no-verify warns" 0 "wasn't checked"
+printf "$CLEAN" > "$T/Bad.swift"
+git -C "$T" add Bad.swift
+commit "$T" -m fixed
+printf "$LINT_ERROR" > "$T/Amended.swift"
+git -C "$T" add Amended.swift
+commit "$T" --amend --no-verify --no-edit;               expect "amend with --no-verify warns" 0 "Amended.swift"
+git -C "$T" checkout -qb topic
+printf "$LINT_ERROR" > "$T/Topic.swift"
+git -C "$T" add Topic.swift
+commit "$T" --no-verify -m topic 2>/dev/null
+git -C "$T" checkout -q -
+printf "$CLEAN" > "$T/Main.swift"
+git -C "$T" add Main.swift
+commit "$T" -m main
+git -C "$T" checkout -q topic
+OUT=$(env PATH="$NOBREW" git -C "$T" rebase -q - 2>&1); CODE=$?
+expect "rebase replays without warnings" 0
+check "  (no warning)" "$(yes_if sh -c '! printf "%s" "$1" | grep -q "wasn.t checked"' _ "$OUT")"
+git -C "$T" checkout -q -
+git -C "$T" merge -q --no-ff --no-commit topic >/dev/null 2>&1
+printf "$LINT_ERROR" > "$T/Resolved.swift"
+git -C "$T" add Resolved.swift
+commit "$T" -m merge;                                    expect "merge with a new lint error is blocked by pre-commit" 1 "Resolved.swift"
+check "  but not for the file brought in unchanged" "$(yes_if sh -c '! printf "%s" "$1" | grep -q "Topic.swift"' _ "$OUT")"
+git -C "$T" merge --abort
+
+rm -rf "$T"
+mkdir -p "$T"
+if git -C "$T" init -q --object-format=sha256 2>/dev/null; then
+    git -C "$T" config user.email test@example.com
+    git -C "$T" config user.name Test
+    git -C "$T" config commit.gpgsign false
+    printf '{ "version": 1, "indentation": { "spaces": 4 }, "lineLength": 1000 }\n' > "$T/.swift-format"
+    printf 'parent_config: ci_scripts/.swiftlint.yml\n' > "$T/.swiftlint.local.yml"
+    ln -s "$ROOT" "$T/ci_scripts"
+    (cd "$T" && ci_scripts/hooks/install-git-hooks.sh >/dev/null)
+    printf "$LINT_ERROR" > "$T/Bad.swift"
+    git -C "$T" add Bad.swift
+    commit "$T" --no-verify -m root;                     expect "SHA-256 repository: first commit with --no-verify warns" 0 "force_cast"
+    printf "$UNFORMATTED" > "$T/Sample.swift"
+    git -C "$T" add Sample.swift
+    commit "$T" -m sample;                               expect "SHA-256 repository: pre-commit formats" 0
+    check "  committed file formatted" "$(yes_if sh -c 'git -C "$1" show HEAD:Sample.swift | grep -q "^    let"' _ "$T")"
+fi
+
+echo "== pre-commit-lint.sh (compatibility shim)"
+# Run the shim as Claude Code does before a Bash command: shim <session id> [command]
+shim() {
+    OUT=$(jq -n --arg s "$1" --arg c "${2:-git commit -m x}" '{session_id: $s, tool_input: {command: $c}}' |
+        env CLAUDE_PROJECT_DIR="$T" /bin/bash "$T/ci_scripts/hooks/pre-commit-lint.sh" 2>&1); CODE=$?
+}
+mkrepo "$T"
+for c in "git commit -m x" "rg 'git commit'" "ls"; do
+    shim s1 "$c"
+    expect "allows: $c" 0
+    check "  quietly" "$(yes_if [ -z "$OUT" ])"
+done
+check "and installs the git hooks" "$(yes_if [ -x "$T/.git/hooks/pre-commit" -a -x "$T/.git/hooks/post-commit" ])"
+mkrepo "$T"
+printf '#!/bin/sh\necho other tool\n' > "$T/.git/hooks/pre-commit"
+chmod +x "$T/.git/hooks/pre-commit"
+shim s1
+expect "with a hook it left alone, allows the command" 0
+check "  telling Claude, as PreToolUse context without a decision" "$(yes_if sh -c 'printf "%s" "$1" | jq -e ".hookSpecificOutput | .hookEventName == \"PreToolUse\" and (.additionalContext | contains(\"left alone\")) and .permissionDecision == null" >/dev/null' _ "$OUT")"
+shim s1
+check "  once per session" "$(yes_if [ -z "$OUT" ])"
+shim s2
+check "  and again in a new session" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "left alone"' _ "$OUT")"
+# A session started outside a login shell, with jq only in Apple Silicon Homebrew
+if [ -x /opt/homebrew/bin/jq ]; then
+    mkdir -p "$WORK/nojq"
+    for tool in git dirname cat grep sed head chmod mkdir; do
+        ln -sf "$(command -v "$tool")" "$WORK/nojq/$tool"
+    done
+    OUT=$(printf '{"session_id":"s3"}' | env PATH="$WORK/nojq" CLAUDE_PROJECT_DIR="$T" /bin/bash "$T/ci_scripts/hooks/pre-commit-lint.sh" 2>&1); CODE=$?
+    check "  and with jq only in Homebrew, off PATH" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "left alone"' _ "$OUT")"
+    OUT=$(printf '{}' | env PATH="$WORK/nojq" CLAUDE_PROJECT_DIR="$T" "$T/ci_scripts/hooks/install-git-hooks.sh" --claude 2>/dev/null); CODE=$?
+    check "  the installer's --claude JSON too" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "hookSpecificOutput"' _ "$OUT")"
+fi
+
+echo "== post-edit-lint.sh"
 mkrepo "$T"
 printf "$LINT_ERROR" > "$T/Bad.swift"
 post "$T/Bad.swift"
@@ -318,7 +432,7 @@ printf "$LINT_ERROR" > "$O/Bad.swift"
 post "$O/Bad.swift"
 expect "uses the edited file's repository config" 0 "swiftlint (Bad.swift): pass"
 OUT=$(jq -n --arg f "$T/Clean.swift" '{tool_input: {file_path: $f}}' |
-    env PATH="$PATH_X86" CLAUDE_PROJECT_DIR="$T" /bin/bash "$H/post-edit-lint.sh" 2>/dev/null)
+    env PATH="$WORK/x86bin:$NOBREW:/opt/homebrew/bin" CLAUDE_PROJECT_DIR="$T" /bin/bash "$H/post-edit-lint.sh" 2>/dev/null)
 check "swiftlint that can't run is reported, not a pass" "$(yes_if sh -c 'printf "%s" "$1" | grep -q "can.t run" && ! printf "%s" "$1" | grep -q "swiftlint (Clean.swift): pass"' _ "$OUT")"
 rm "$T/ci_scripts"
 post "$T/Clean.swift"
