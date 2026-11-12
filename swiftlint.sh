@@ -73,7 +73,7 @@ if which swiftlint >/dev/null; then
     fi
 
     echo "note: SwiftLint Script: Config: ${SWIFT_LINT_FILE}"
-    swiftlint lint $STRICT_MODE --config "${SWIFT_LINT_FILE}" $SWIFT_LINT_TARGET
+    swiftlint lint $STRICT_MODE --config "${SWIFT_LINT_FILE}" "$SWIFT_LINT_TARGET"
 else
     echo "warning: SwiftLint not installed"
 fi

@@ -16,7 +16,7 @@
 
 set -e
 
-if [[ -n $CI_ARCHIVE_PATH ]]; then
+if [ -n "$CI_ARCHIVE_PATH" ]; then
     echo "note: ci_post_xcodebuild: exec"
     ./firebase_upload_symbols.sh
     ./testflight_whattotest.sh
