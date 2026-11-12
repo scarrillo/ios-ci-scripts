@@ -149,9 +149,11 @@ swift_checks_classify() {
 
 # Run SwiftLint on SWIFT_FULL by path and on SWIFT_PARTIAL from their
 # content, naming those "<path> ($1)". Prints the findings and returns 1 when
-# SwiftLint reports errors or fails.
+# SwiftLint reports errors or fails. Otherwise prints only the warnings, so
+# Claude and the terminal see them, and sets LINT_WARNINGS to their count.
 swift_checks_lint() {
-    local entry output failed=false findings=""
+    local entry output failed=false findings="" warnings
+    LINT_WARNINGS=0
     local paths=()
     swift_checks_lint_args
     for entry in "${SWIFT_FULL[@]}"; do
@@ -169,6 +171,11 @@ swift_checks_lint() {
     if $failed; then
         printf '%s' "$findings" >&2
         return 1
+    fi
+    warnings=$(printf '%s' "$findings" | grep -E ': warning: ')
+    if [ -n "$warnings" ]; then
+        printf '%s\n' "$warnings" >&2
+        LINT_WARNINGS=$(printf '%s\n' "$warnings" | wc -l | tr -d ' ')
     fi
     return 0
 }
@@ -226,7 +233,11 @@ swift_checks_staged() {
         echo "SwiftLint found errors. Please fix before committing." >&2
         return 1
     fi
-    echo "SwiftLint passed." >&2
+    if [ "$LINT_WARNINGS" -gt 0 ]; then
+        echo "SwiftLint passed with $LINT_WARNINGS warning(s) in the staged files, listed above. They don't block the commit; some may predate it." >&2
+    else
+        echo "SwiftLint passed." >&2
+    fi
     return 0
 }
 

@@ -26,6 +26,7 @@ NOBREW="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 UNFORMATTED='struct Sample {\n  let value = 1\n}\n'
 LINT_ERROR='let value: Any = 1\nlet number = value as! Int\n'
 CLEAN='let value = 1\n'
+LINT_WARNING="let value = \"$(printf '%0210d' 0)\"\n"  # line_length warning, not an error
 pass=0
 fail=0
 
@@ -185,6 +186,11 @@ printf "$UNFORMATTED" > "$T/Sample.swift"
 git -C "$T" add Sample.swift
 commit "$T" -m sample;                                   expect "clean commit allowed" 0
 check "committed file formatted" "$(yes_if sh -c 'git -C "$1" show HEAD:Sample.swift | grep -q "^    let"' _ "$T")"
+check "  and reports no warnings" "$(yes_if sh -c 'printf "%s" "$1" | grep -qx "SwiftLint passed."' _ "$OUT")"
+printf "$LINT_WARNING" > "$T/Long.swift"
+git -C "$T" add Long.swift
+commit "$T" -m long;                                     expect "a lint warning doesn't block" 0 "line_length"
+check "  and is reported with its count" "$(yes_if sh -c 'printf "%s" "$1" | grep -qF "SwiftLint passed with 1 warning(s)"' _ "$OUT")"
 printf "$LINT_ERROR" > "$T/Bad.swift"
 git -C "$T" add Bad.swift
 commit "$T" -m bad;                                      expect "lint error blocks" 1 "force_cast"
