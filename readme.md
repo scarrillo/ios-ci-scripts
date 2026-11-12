@@ -433,7 +433,7 @@ A checkout without `ci_scripts`, such as a worktree whose submodule isn't initia
 | Files | Added, copied, and modified `.swift` files (a renamed file counts as added), read null-separated so any file name works |
 | swift-format | Auto-formats fully staged files in place and re-stages them. `post-commit.sh` reports formatting differences instead |
 | Partly staged files | A file whose working copy differs from the content being checked, such as a staged file with unstaged changes, is not auto-formatted (warning), because re-staging would commit those changes. That content is linted, not the working copy |
-| SwiftLint | Lints the files — **blocks the commit on errors** |
+| SwiftLint | Lints the files — **blocks the commit on errors**. Warnings don't block; they're listed with their count, so Claude sees them in the `git commit` output. Linting covers whole files, so some may predate the commit |
 | Symlinks | A Swift symlink is skipped with a warning, so formatting can't write through a link. A regular file whose working copy is now a symlink is checked like a partly staged file |
 | swift-format failure | **Blocks the commit** when swift-format can't format or check a file, for example with a malformed `.swift-format` |
 | Merges | A file whose content matches another merge parent (brought in unchanged) is skipped, so a merge is checked for the files its resolution changed, including a merge finished with `--no-verify`. A heuristic, not a detector for hand-resolved conflicts |
@@ -622,9 +622,17 @@ Script:
 ```bash
 # Only run locally - Xcode Cloud uses ci_post_clone.sh
 if [ -z "$CI" ]; then
+    if [ ! -x ./ci_scripts/swiftlint.sh ] || [ ! -x ./ci_scripts/hooks/install-git-hooks.sh ]; then
+        echo "error: ci_scripts submodule is missing or out of date. Run: git submodule update --init"
+        exit 1
+    fi
+    # Install the git hooks that check commits; does nothing once installed
+    ./ci_scripts/hooks/install-git-hooks.sh
     ./ci_scripts/swiftlint.sh
 fi
 ```
+
+The check fails the build with the fix when `ci_scripts` is missing, or when the superproject was pulled without `git submodule update` and the submodule predates the installer. The installer runs before SwiftLint, so SwiftLint's result stays the phase's result. Every local build then keeps the [git hooks](#hooksinstall-git-hookssh) installed.
 
 **Firebase Crashlytics (Build Phase)**
 
